@@ -31,20 +31,73 @@ echo "  ╚═══════════════════════
 echo -e "${NC}"
 
 # ───────────────────────────────────────────────────────
+#  COMMAND-LINE ARGUMENTS (Optional)
+# ───────────────────────────────────────────────────────
+# Usage: bash urdu.sh [URL] [MODEL] [LANG] [FORMAT] [TRANSLATE] [OUTPUT_DIR]
+# Example: bash urdu.sh "https://youtu.be/abc123" "5" "ur" "1" "1" "$HOME/urdu_transcripts/data"
+
+if [ $# -ge 1 ]; then
+  # Command-line mode (non-interactive)
+  URL="${1}"
+  MODEL_CHOICE="${2:-5}"
+  LANG_INPUT="${3:-Urdu}"
+  FORMAT_CHOICE="${4:-1}"
+  TRANS_CHOICE="${5:-1}"
+  CUSTOM_DIR="${6:-}"
+  INTERACTIVE=false
+else
+  # Interactive mode
+  INTERACTIVE=true
+fi
+
+# ───────────────────────────────────────────────────────
 #  STEP 1 — YouTube URL
 # ───────────────────────────────────────────────────────
-section "Step 1: YouTube URL"
-echo -e "  Paste a ${BOLD}single video URL${NC} or a ${BOLD}playlist URL${NC}:"
-echo -e "  ${YELLOW}Example:${NC} https://youtube.com/watch?v=xxxx"
-echo -e "  ${YELLOW}Example:${NC} https://youtube.com/playlist?list=xxxx"
-echo ""
-read -rp "  🔗 URL: " URL
-[ -z "$URL" ] && err "No URL provided."
+if [ "$INTERACTIVE" = true ]; then
+  section "Step 1: YouTube URL"
+  echo -e "  Paste a ${BOLD}single video URL${NC} or a ${BOLD}playlist URL${NC}:"
+  echo -e "  ${YELLOW}Example:${NC} https://youtube.com/watch?v=xxxx"
+  echo -e "  ${YELLOW}Example:${NC} https://youtube.com/playlist?list=xxxx"
+  echo ""
+  read -rp "  🔗 URL: " URL
+  [ -z "$URL" ] && err "No URL provided."
+else
+  section "Step 1: YouTube URL (from command-line argument)"
+  log "URL: $URL"
+  [ -z "$URL" ] && err "No URL provided."
+fi
+
+# ───────────────────────────────────────────────────────
+#  SANITIZE URL FOR FOLDER NAME (Windows + Linux safe)
+# ───────────────────────────────────────────────────────
+sanitize_folder_name() {
+  local name="$1"
+  # Remove special characters, keep alphanumeric, dash, underscore
+  echo "$name" | tr -cd '[:alnum:]_-' | cut -c1-100
+}
+
+# Extract URL identifier (playlist ID or video ID)
+if [[ "$URL" =~ list=([a-zA-Z0-9_-]+) ]]; then
+  URL_ID="${BASH_REMATCH[1]}"
+  URL_TYPE="playlist"
+elif [[ "$URL" =~ v=([a-zA-Z0-9_-]+) ]]; then
+  URL_ID="${BASH_REMATCH[1]}"
+  URL_TYPE="video"
+else
+  URL_ID=$(echo "$URL" | md5sum | cut -c1-12)
+  URL_TYPE="unknown"
+fi
+
+# Create safe folder name from URL
+URL_FOLDER_NAME="$(sanitize_folder_name "${URL_TYPE}_${URL_ID}")"
+log "URL Folder Name: $URL_FOLDER_NAME"
 
 # ───────────────────────────────────────────────────────
 #  STEP 2 — Cookies (auto-detect in script dir)
 # ───────────────────────────────────────────────────────
-section "Step 2: YouTube Authentication"
+if [ "$INTERACTIVE" = true ]; then
+  section "Step 2: YouTube Authentication"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTO_COOKIES="$SCRIPT_DIR/cookies.txt"
@@ -53,7 +106,7 @@ COOKIES_ARG=""
 if [ -f "$AUTO_COOKIES" ]; then
   COOKIES_ARG="--cookies $AUTO_COOKIES"
   log "cookies.txt found — using automatically ✅"
-else
+elif [ "$INTERACTIVE" = true ]; then
   echo -e "  No cookies.txt found in script directory."
   echo -e "  ${YELLOW}[1]${NC} Continue without cookies"
   echo -e "  ${YELLOW}[2]${NC} Provide path to cookies.txt manually"
@@ -73,34 +126,42 @@ fi
 # ───────────────────────────────────────────────────────
 #  STEP 3 — Transcription Language (default: Urdu)
 # ───────────────────────────────────────────────────────
-section "Step 3: Transcription Language"
-echo -e "  What language is spoken in the video?"
-echo -e "  ${YELLOW}Press Enter for default (Urdu)${NC}"
-echo -e "  Or type a language: Arabic, English, French, Hindi, Turkish..."
-echo ""
-read -rp "  🌐 Language [default: Urdu]: " LANG_INPUT
+if [ "$INTERACTIVE" = true ]; then
+  section "Step 3: Transcription Language"
+  echo -e "  What language is spoken in the video?"
+  echo -e "  ${YELLOW}Press Enter for default (Urdu)${NC}"
+  echo -e "  Or type a language: Arabic, English, French, Hindi, Turkish..."
+  echo ""
+  read -rp "  🌐 Language [default: Urdu]: " LANG_INPUT
+else
+  section "Step 3: Transcription Language (from command-line argument)"
+  log "Language: $LANG_INPUT"
+fi
 LANG_NAME="${LANG_INPUT:-Urdu}"
-
-# Map language names to ISO 639-1 codes (Whisper requirement)
-declare -A LANG_CODES=([urdu]="ur" [arabic]="ar" [english]="en" [french]="fr" [hindi]="hi" [turkish]="tr" [persian]="fa" [spanish]="es" [german]="de" [portuguese]="pt" [italian]="it" [dutch]="nl" [russian]="ru" [chinese]="zh" [japanese]="ja")
+declare -A LANG_CODES=([urdu]="ur" [arabic]="ar" [english]="en" [french]="fr" [hindi]="hi" [turkish]="tr" [persian]="fa" [russian]="ru" [chinese]="zh" [japanese]="ja" [korean]="ko" [spanish]="es")
 LANG_KEY="${LANG_NAME,,}"
 TRANSCRIBE_LANG="${LANG_CODES[$LANG_KEY]:-$LANG_KEY}"
-log "Transcription language: $LANG_NAME (code: $TRANSCRIBE_LANG)"
+log "Transcription language: $TRANSCRIBE_LANG"
 
 # ───────────────────────────────────────────────────────
 #  STEP 4 — Whisper Model
 # ───────────────────────────────────────────────────────
-section "Step 4: Whisper Model"
-echo -e "  Choose transcription model:"
-echo ""
-echo -e "  ${YELLOW}[1]${NC} tiny           — Fastest, lower accuracy   (~75MB)"
-echo -e "  ${YELLOW}[2]${NC} base           — Fast, decent accuracy      (~150MB)"
-echo -e "  ${YELLOW}[3]${NC} small          — Balanced                   (~500MB)"
-echo -e "  ${YELLOW}[4]${NC} medium         — Good accuracy              (~1.5GB)"
-echo -e "  ${YELLOW}[5]${NC} large-v3-turbo — Fast + high accuracy       (~1.6GB) ← recommended"
-echo -e "  ${YELLOW}[6]${NC} large-v3       — Best accuracy              (~3GB)"
-echo ""
-read -rp "  Choice [1-6, default=5]: " MODEL_CHOICE
+if [ "$INTERACTIVE" = true ]; then
+  section "Step 4: Whisper Model"
+  echo -e "  Choose transcription model:"
+  echo ""
+  echo -e "  ${YELLOW}[1]${NC} tiny           — Fastest, lower accuracy   (~75MB)"
+  echo -e "  ${YELLOW}[2]${NC} base           — Fast, decent accuracy      (~150MB)"
+  echo -e "  ${YELLOW}[3]${NC} small          — Balanced                   (~500MB)"
+  echo -e "  ${YELLOW}[4]${NC} medium         — Good accuracy              (~1.5GB)"
+  echo -e "  ${YELLOW}[5]${NC} large-v3-turbo — Fast + high accuracy       (~1.6GB) ← recommended"
+  echo -e "  ${YELLOW}[6]${NC} large-v3       — Best accuracy              (~3GB)"
+  echo ""
+  read -rp "  Choice [1-6, default=5]: " MODEL_CHOICE
+else
+  section "Step 4: Whisper Model (from command-line argument)"
+  log "Model choice: $MODEL_CHOICE"
+fi
 
 case "$MODEL_CHOICE" in
   1) MODEL="tiny" ;;
@@ -115,15 +176,20 @@ log "Model selected: $MODEL"
 # ───────────────────────────────────────────────────────
 #  STEP 5 — Output Format
 # ───────────────────────────────────────────────────────
-section "Step 5: Output Format"
-echo -e "  What subtitle format do you want?"
-echo ""
-echo -e "  ${YELLOW}[1]${NC} SRT only       — Standard subtitle (.srt) ← recommended"
-echo -e "  ${YELLOW}[2]${NC} TXT only       — Plain transcript (.txt)"
-echo -e "  ${YELLOW}[3]${NC} Both SRT + TXT"
-echo -e "  ${YELLOW}[4]${NC} VTT only       — Web subtitles (.vtt)"
-echo ""
-read -rp "  Choice [1-4, default=1]: " FORMAT_CHOICE
+if [ "$INTERACTIVE" = true ]; then
+  section "Step 5: Output Format"
+  echo -e "  What subtitle format do you want?"
+  echo ""
+  echo -e "  ${YELLOW}[1]${NC} SRT only       — Standard subtitle (.srt) ← recommended"
+  echo -e "  ${YELLOW}[2]${NC} TXT only       — Plain transcript (.txt)"
+  echo -e "  ${YELLOW}[3]${NC} Both SRT + TXT"
+  echo -e "  ${YELLOW}[4]${NC} VTT only       — Web subtitles (.vtt)"
+  echo ""
+  read -rp "  Choice [1-4, default=1]: " FORMAT_CHOICE
+else
+  section "Step 5: Output Format (from command-line argument)"
+  log "Format choice: $FORMAT_CHOICE"
+fi
 
 case "$FORMAT_CHOICE" in
   2) FORMATS=("txt") ;;
@@ -136,15 +202,20 @@ log "Output format(s): ${FORMATS[*]}"
 # ───────────────────────────────────────────────────────
 #  STEP 6 — Translation
 # ───────────────────────────────────────────────────────
-section "Step 6: Translation"
-echo -e "  Do you want to translate the transcript?"
-echo ""
-echo -e "  ${YELLOW}[1]${NC} No translation"
-echo -e "  ${YELLOW}[2]${NC} English only       (fast — built into Whisper)"
-echo -e "  ${YELLOW}[3]${NC} Arabic only        (RTL — via ArgosTranslate)"
-echo -e "  ${YELLOW}[4]${NC} Both English + Arabic"
-echo ""
-read -rp "  Choice [1-4, default=1]: " TRANS_CHOICE
+if [ "$INTERACTIVE" = true ]; then
+  section "Step 6: Translation"
+  echo -e "  Do you want to translate the transcript?"
+  echo ""
+  echo -e "  ${YELLOW}[1]${NC} No translation"
+  echo -e "  ${YELLOW}[2]${NC} English only       (fast — built into Whisper)"
+  echo -e "  ${YELLOW}[3]${NC} Arabic only        (RTL — via ArgosTranslate)"
+  echo -e "  ${YELLOW}[4]${NC} Both English + Arabic"
+  echo ""
+  read -rp "  Choice [1-4, default=1]: " TRANS_CHOICE
+else
+  section "Step 6: Translation (from command-line argument)"
+  log "Translation choice: $TRANS_CHOICE"
+fi
 
 TRANSLATE_EN=false
 TRANSLATE_AR=false
@@ -160,25 +231,33 @@ if $TRANSLATE_AR; then log "Arabic translation: enabled (RTL)"; fi
 # ───────────────────────────────────────────────────────
 #  STEP 7 — Output Directory
 # ───────────────────────────────────────────────────────
-section "Step 7: Output Directory"
-echo -e "  Where should transcripts be saved?"
-echo -e "  ${YELLOW}[default: $HOME/urdu_transcripts]${NC}"
-echo ""
-read -rp "  📁 Path (press Enter for default): " CUSTOM_DIR
-OUTPUT_DIR="${CUSTOM_DIR:-$HOME/urdu_transcripts}"
-mkdir -p "$OUTPUT_DIR"
-mkdir -p "$OUTPUT_DIR/audio"
-mkdir -p "$OUTPUT_DIR/done"
+if [ "$INTERACTIVE" = true ]; then
+  section "Step 7: Output Directory"
+  echo -e "  Where should transcripts be saved?"
+  echo -e "  ${YELLOW}[default: $HOME/urdu_transcripts/data]${NC}"
+  echo ""
+  read -rp "  📁 Base Path (press Enter for default): " CUSTOM_DIR
+else
+  section "Step 7: Output Directory (from command-line argument)"
+  [ -n "$CUSTOM_DIR" ] && log "Output directory: $CUSTOM_DIR" || log "Using default output directory"
+fi
+BASE_OUTPUT_DIR="${CUSTOM_DIR:-$HOME/urdu_transcripts/data}"
 
-# Create subfolder inside srt/ named with sanitized URL (valid on Linux & Windows)
-URL_FOLDER=$(echo "$URL" | sed 's|[^a-zA-Z0-9._-]|_|g' | cut -c1-80)
-SRT_OUTPUT_DIR="$OUTPUT_DIR/srt/$URL_FOLDER"
-mkdir -p "$SRT_OUTPUT_DIR"
+# Create directory structure: BASE_OUTPUT_DIR/audio/URL_FOLDER/ and BASE_OUTPUT_DIR/srt/URL_FOLDER/
+AUDIO_FOLDER="$BASE_OUTPUT_DIR/audio"
+SRT_FOLDER="$BASE_OUTPUT_DIR/srt"
+AUDIO_TEMP_DIR="$AUDIO_FOLDER/tmp"
+AUDIO_URL_DIR="$AUDIO_FOLDER/$URL_FOLDER_NAME"
+SRT_URL_DIR="$SRT_FOLDER/$URL_FOLDER_NAME"
 
-log "Output directory: $OUTPUT_DIR"
-log "  📂 srt/$URL_FOLDER/   → subtitle files"
-log "  📂 audio/             → audio files"
-log "  📂 done/              → completed (srt + audio) after processing"
+mkdir -p "$AUDIO_TEMP_DIR" || err "Failed to create $AUDIO_TEMP_DIR"
+mkdir -p "$AUDIO_URL_DIR" || err "Failed to create $AUDIO_URL_DIR"
+mkdir -p "$SRT_URL_DIR" || err "Failed to create $SRT_URL_DIR"
+
+log "Output structure created:"
+log "  � Audio (temp): $AUDIO_TEMP_DIR"
+log "  � Audio (done): $AUDIO_URL_DIR"
+log "  📁 Subtitles  : $SRT_URL_DIR"
 
 # ───────────────────────────────────────────────────────
 #  INSTALL DEPENDENCIES
@@ -246,6 +325,9 @@ transcribe_audio() {
   local AUDIO_FILE="$1"
   local OUT_NAME="$2"
 
+  # Validate input file exists
+  [ ! -f "$AUDIO_FILE" ] && err "Audio file not found: $AUDIO_FILE"
+
   # RAM check
   AVAILABLE_MB=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
   declare -A MODEL_RAM=([tiny]=400 [base]=600 [small]=1200 [medium]=3000 [large-v3-turbo]=3500 [large-v3]=5000)
@@ -260,158 +342,175 @@ transcribe_audio() {
 
   for FMT in "${FORMATS[@]}"; do
     local EXT="$FMT"
-    local OUT_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}.${EXT}"
+    local OUT_FILE="$SRT_URL_DIR/${OUT_NAME}.${EXT}"
 
     # faster-whisper via python — uses int8 quantization for max CPU speed
-    python3 << PYEOF
+    python3 << PYEOF || err "Transcription failed"
 from faster_whisper import WhisperModel
 import sys
 
-model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
-segments, info = model.transcribe(
-    "$AUDIO_FILE",
-    language="$TRANSCRIBE_LANG",
-    beam_size=5,
-    vad_filter=True,
-    vad_parameters=dict(min_silence_duration_ms=500)
-)
+try:
+    model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
+    segments, info = model.transcribe(
+        "$AUDIO_FILE",
+        language="${TRANSCRIBE_LANG}",
+        beam_size=5,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500)
+    )
 
-def fmt_time(s):
-    h = int(s // 3600)
-    m = int((s % 3600) // 60)
-    sec = s % 60
-    return f"{h:02}:{m:02}:{sec:06.3f}".replace('.', ',')
+    def fmt_time(s):
+        h = int(s // 3600)
+        m = int((s % 3600) // 60)
+        sec = s % 60
+        return f"{h:02}:{m:02}:{sec:06.3f}".replace('.', ',')
 
-segments = list(segments)
+    segments = list(segments)
+    if not segments:
+        print(f"Warning: No speech detected in audio", file=sys.stderr)
+        sys.exit(0)
 
-if "$FMT" == "srt":
-    with open("$OUT_FILE", "w", encoding="utf-8") as f:
-        for i, seg in enumerate(segments, 1):
-            f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
-elif "$FMT" == "txt":
-    with open("$OUT_FILE", "w", encoding="utf-8") as f:
-        for seg in segments:
-            f.write(seg.text.strip() + "\n")
-elif "$FMT" == "vtt":
-    with open("$OUT_FILE", "w", encoding="utf-8") as f:
-        f.write("WEBVTT\n\n")
-        for i, seg in enumerate(segments, 1):
-            f.write(f"{fmt_time(seg.start).replace(',','.')} --> {fmt_time(seg.end).replace(',','.')}\n{seg.text.strip()}\n\n")
+    if "$FMT" == "srt":
+        with open("$OUT_FILE", "w", encoding="utf-8") as f:
+            for i, seg in enumerate(segments, 1):
+                f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
+    elif "$FMT" == "txt":
+        with open("$OUT_FILE", "w", encoding="utf-8") as f:
+            for seg in segments:
+                f.write(seg.text.strip() + "\n")
+    elif "$FMT" == "vtt":
+        with open("$OUT_FILE", "w", encoding="utf-8") as f:
+            f.write("WEBVTT\n\n")
+            for seg in segments:
+                f.write(f"{fmt_time(seg.start).replace(',','.')} --> {fmt_time(seg.end).replace(',','.')}\n{seg.text.strip()}\n\n")
 
-print(f"Transcription saved: $OUT_FILE")
+    print(f"✓ Transcription saved: $OUT_FILE")
+
+except Exception as e:
+    print(f"ERROR: {str(e)}", file=sys.stderr)
+    sys.exit(1)
 PYEOF
 
     [ -f "$OUT_FILE" ] && log "Saved: $OUT_FILE"
   done
 
-  # ── English translation (Whisper built-in, only to English) ──
+  # ── English translation (Whisper built-in) ──
   if $TRANSLATE_EN; then
-    local EN_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}_en.srt"
-    python3 << PYEOF
+    local EN_FILE="$SRT_URL_DIR/${OUT_NAME}_en.srt"
+
+    python3 << PYEOF || warn "English translation failed"
 from faster_whisper import WhisperModel
 
-model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
-segments, _ = model.transcribe(
-    "$AUDIO_FILE",
-    language="$TRANSCRIBE_LANG",
-    task="translate",
-    beam_size=5,
-    vad_filter=True,
-    vad_parameters=dict(min_silence_duration_ms=500)
-)
+try:
+    model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
+    segments, _ = model.transcribe(
+        "$AUDIO_FILE",
+        language="${TRANSCRIBE_LANG}",
+        task="translate",
+        beam_size=5,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500)
+    )
 
-def fmt_time(s):
-    h = int(s // 3600)
-    m = int((s % 3600) // 60)
-    sec = s % 60
-    return f"{h:02}:{m:02}:{sec:06.3f}".replace('.', ',')
+    def fmt_time(s):
+        h = int(s // 3600)
+        m = int((s % 3600) // 60)
+        sec = s % 60
+        return f"{h:02}:{m:02}:{sec:06.3f}".replace('.', ',')
 
-with open("$EN_FILE", "w", encoding="utf-8") as f:
-    for i, seg in enumerate(list(segments), 1):
-        f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
+    with open("$EN_FILE", "w", encoding="utf-8") as f:
+        for i, seg in enumerate(list(segments), 1):
+            f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
 
-print(f"English translation saved: $EN_FILE")
+    print(f"✓ English translation saved: $EN_FILE")
+except Exception as e:
+    print(f"ERROR: {str(e)}", file=sys.stderr)
 PYEOF
     [ -f "$EN_FILE" ] && log "Saved (EN): $EN_FILE"
   fi
 
-  # ── Arabic translation (Whisper→English first, then ArgosTranslate en→ar with RTL) ──
+  # ── Arabic translation (RTL) ──
   if $TRANSLATE_AR; then
-    local AR_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}_ar.srt"
-    local TEMP_EN_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}_temp_en.srt"
+    local AR_FILE="$SRT_URL_DIR/${OUT_NAME}_ar.srt"
+    local TEMP_EN_FILE="/tmp/${OUT_NAME}_temp_en_$RANDOM.srt"
 
-    # Step 1: get English from Whisper (reuse if already done)
-    if $TRANSLATE_EN && [ -f "$SRT_OUTPUT_DIR/${OUT_NAME}_en.srt" ]; then
-      TEMP_EN_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}_en.srt"
+    CLEANUP_TEMP=true
+    if $TRANSLATE_EN && [ -f "$SRT_URL_DIR/${OUT_NAME}_en.srt" ]; then
+      TEMP_EN_FILE="$SRT_URL_DIR/${OUT_NAME}_en.srt"
       CLEANUP_TEMP=false
     else
-      CLEANUP_TEMP=true
-      python3 << PYEOF
+      python3 << PYEOF || { warn "Failed to generate English for Arabic translation"; return; }
 from faster_whisper import WhisperModel
 
-model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
-segments, _ = model.transcribe(
-    "$AUDIO_FILE",
-    language="$TRANSCRIBE_LANG",
-    task="translate",
-    beam_size=5,
-    vad_filter=True,
-    vad_parameters=dict(min_silence_duration_ms=500)
-)
+try:
+    model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
+    segments, _ = model.transcribe(
+        "$AUDIO_FILE",
+        language="${TRANSCRIBE_LANG}",
+        task="translate",
+        beam_size=5,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500)
+    )
 
-def fmt_time(s):
-    h = int(s // 3600)
-    m = int((s % 3600) // 60)
-    sec = s % 60
-    return f"{h:02}:{m:02}:{sec:06.3f}".replace('.', ',')
+    def fmt_time(s):
+        h = int(s // 3600)
+        m = int((s % 3600) // 60)
+        sec = s % 60
+        return f"{h:02}:{m:02}:{sec:06.3f}".replace('.', ',')
 
-with open("$TEMP_EN_FILE", "w", encoding="utf-8") as f:
-    for i, seg in enumerate(list(segments), 1):
-        f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
+    with open("$TEMP_EN_FILE", "w", encoding="utf-8") as f:
+        for i, seg in enumerate(list(segments), 1):
+            f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
+except Exception as e:
+    print(f"ERROR: {str(e)}", file=sys.stderr)
 PYEOF
     fi
 
-    # Step 2: translate each line en→ar with ArgosTranslate, wrap RTL
-    python3 << PYEOF
-import re
+    python3 << PYEOF || { warn "Arabic translation failed"; [ "$CLEANUP_TEMP" = "true" ] && rm -f "$TEMP_EN_FILE"; return; }
 import argostranslate.translate
 
-# Get translator
-langs = argostranslate.translate.get_installed_languages()
-en_lang = next((l for l in langs if l.code == 'en'), None)
-ar_lang = next((l for l in langs if l.code == 'ar'), None)
-translator = en_lang.get_translation(ar_lang)
+try:
+    langs = argostranslate.translate.get_installed_languages()
+    en_lang = next((l for l in langs if l.code == 'en'), None)
+    ar_lang = next((l for l in langs if l.code == 'ar'), None)
+    
+    if not en_lang or not ar_lang:
+        raise Exception("Arabic language pack not installed")
+    
+    translator = en_lang.get_translation(ar_lang)
 
-RTL_START = '\u202B'  # Right-to-Left Embedding
-RTL_END   = '\u202C'  # Pop Directional Formatting
+    RTL_START = '\u202B'
+    RTL_END   = '\u202C'
 
-with open("$TEMP_EN_FILE", "r", encoding="utf-8") as f:
-    content = f.read()
+    with open("$TEMP_EN_FILE", "r", encoding="utf-8") as f:
+        content = f.read()
 
-blocks = content.strip().split('\n\n')
-out_lines = []
+    blocks = content.strip().split('\n\n')
+    out_lines = []
 
-for block in blocks:
-    lines = block.strip().split('\n')
-    if len(lines) < 3:
-        out_lines.append(block)
-        continue
-    idx      = lines[0]
-    timing   = lines[1]
-    text_en  = ' '.join(lines[2:])
-    text_ar  = translator.translate(text_en)
-    text_ar_rtl = f"{RTL_START}{text_ar}{RTL_END}"
-    out_lines.append(f"{idx}\n{timing}\n{text_ar_rtl}")
+    for block in blocks:
+        lines = block.strip().split('\n')
+        if len(lines) < 3:
+            out_lines.append(block)
+            continue
+        idx      = lines[0]
+        timing   = lines[1]
+        text_en  = ' '.join(lines[2:])
+        text_ar  = translator.translate(text_en)
+        text_ar_rtl = f"{RTL_START}{text_ar}{RTL_END}"
+        out_lines.append(f"{idx}\n{timing}\n{text_ar_rtl}")
 
-with open("$AR_FILE", "w", encoding="utf-8") as f:
-    f.write('\n\n'.join(out_lines) + '\n')
+    with open("$AR_FILE", "w", encoding="utf-8") as f:
+        f.write('\n\n'.join(out_lines) + '\n')
 
-print(f"Arabic RTL translation saved: $AR_FILE")
+    print(f"✓ Arabic RTL translation saved: $AR_FILE")
+except Exception as e:
+    print(f"ERROR: {str(e)}", file=sys.stderr)
 PYEOF
 
     [ -f "$AR_FILE" ] && log "Saved (AR): $AR_FILE"
-    # Cleanup temp English if we made it just for Arabic
-    if [ "$CLEANUP_TEMP" = "true" ]; then
+    if [ "$CLEANUP_TEMP" = "true" ] && [ -f "$TEMP_EN_FILE" ]; then
       rm -f "$TEMP_EN_FILE"
     fi
   fi
@@ -454,22 +553,22 @@ if [ "$PLAYLIST_MODE" = true ]; then
     TITLE="${TITLE:-video_${IDX}}"
 
     SAFE_TITLE="${IDX}_${TITLE}"
-    AUDIO_FILE="$OUTPUT_DIR/audio/${SAFE_TITLE}.mp3"
+    
+    # Download to temp folder
+    TEMP_AUDIO_FILE="$AUDIO_TEMP_DIR/${SAFE_TITLE}.mp3"
 
-    if download_audio "$VID_URL" "$AUDIO_FILE" && [ -f "$AUDIO_FILE" ]; then
-      log "Downloaded: $SAFE_TITLE.mp3"
+    if download_audio "$VID_URL" "$TEMP_AUDIO_FILE" && [ -f "$TEMP_AUDIO_FILE" ]; then
+      log "Downloaded: $SAFE_TITLE.mp3 (temp)"
       warn "Transcribing... ($IDX/$TOTAL)"
-      transcribe_audio "$AUDIO_FILE" "$SAFE_TITLE"
-      # Move completed srt + audio to done/
-      mv "$AUDIO_FILE" "$OUTPUT_DIR/done/${SAFE_TITLE}.mp3" 2>/dev/null || true
-      for F in "$SRT_OUTPUT_DIR/${SAFE_TITLE}".*; do
-        [ -f "$F" ] && mv "$F" "$OUTPUT_DIR/done/" 2>/dev/null || true
-      done
-      log "Moved to done/: $SAFE_TITLE"
+      transcribe_audio "$TEMP_AUDIO_FILE" "$SAFE_TITLE"
+      
+      # Move from temp to URL folder after transcription
+      mv "$TEMP_AUDIO_FILE" "$AUDIO_URL_DIR/${SAFE_TITLE}.mp3" 2>/dev/null || true
+      log "Moved to permanent: audio/$URL_FOLDER_NAME/$SAFE_TITLE.mp3"
       SUCCESS=$((SUCCESS + 1))
     else
       warn "Skipped (download failed): $VID_ID"
-      rm -f "$AUDIO_FILE"
+      rm -f "$TEMP_AUDIO_FILE"
       FAILED=$((FAILED + 1))
     fi
   done
@@ -478,21 +577,21 @@ else
   TITLE=$(yt-dlp --get-title $BASE_YTDLP_ARGS "$URL" 2>/dev/null \
     | tr ' ' '_' | tr -cd '[:alnum:]_-' | cut -c1-60)
   TITLE="${TITLE:-urdu_transcript}"
-  AUDIO_FILE="$OUTPUT_DIR/audio/${TITLE}.mp3"
+  
+  # Download to temp folder
+  TEMP_AUDIO_FILE="$AUDIO_TEMP_DIR/${TITLE}.mp3"
 
-  if download_audio "$URL" "$AUDIO_FILE" && [ -f "$AUDIO_FILE" ]; then
-    log "Downloaded: ${TITLE}.mp3"
+  if download_audio "$URL" "$TEMP_AUDIO_FILE" && [ -f "$TEMP_AUDIO_FILE" ]; then
+    log "Downloaded: ${TITLE}.mp3 (temp)"
     warn "Transcribing..."
-    transcribe_audio "$AUDIO_FILE" "$TITLE"
-    # Move completed srt + audio to done/
-    mv "$AUDIO_FILE" "$OUTPUT_DIR/done/${TITLE}.mp3" 2>/dev/null || true
-    for F in "$SRT_OUTPUT_DIR/${TITLE}".*; do
-      [ -f "$F" ] && mv "$F" "$OUTPUT_DIR/done/" 2>/dev/null || true
-    done
-    log "Moved to done/: $TITLE"
+    transcribe_audio "$TEMP_AUDIO_FILE" "$TITLE"
+    
+    # Move from temp to URL folder after transcription
+    mv "$TEMP_AUDIO_FILE" "$AUDIO_URL_DIR/${TITLE}.mp3" 2>/dev/null || true
+    log "Moved to permanent: audio/$URL_FOLDER_NAME/$TITLE.mp3"
     SUCCESS=1
   else
-    rm -f "$AUDIO_FILE"
+    rm -f "$TEMP_AUDIO_FILE"
     err "Download failed. Check cookies.txt is fresh and node is installed."
   fi
 fi
@@ -507,6 +606,8 @@ if [ "$PLAYLIST_MODE" = true ]; then
   echo -e "${GREEN}  ✔ Processed : ${SUCCESS} / $TOTAL videos${NC}"
   [ "$FAILED" -gt 0 ] && echo -e "${YELLOW}  ✘ Skipped   : ${FAILED} videos (download errors)${NC}"
 fi
-echo -e "${GREEN}  📁 Output   : $OUTPUT_DIR${NC}"
+echo -e "${GREEN}  📁 Base Dir : $BASE_OUTPUT_DIR${NC}"
+echo -e "${GREEN}  📂 Audio    : $AUDIO_URL_DIR${NC}"
+echo -e "${GREEN}  📂 Subtitles: $SRT_URL_DIR${NC}"
 echo -e "${GREEN}${BOLD}═══════════════════════════════════════════${NC}"
 echo ""
