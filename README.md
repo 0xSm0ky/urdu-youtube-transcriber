@@ -66,11 +66,12 @@ The script will detect and use it automatically.
 
 ## ▶️ Usage
 
+### 🎯 Interactive Mode (Default)
 ```bash
 bash urdu.sh
 ```
 
-The script will walk you through 7 steps:
+The script will walk you through 7 steps interactively:
 
 ```
 Step 1 — YouTube URL        (single video or playlist)
@@ -82,25 +83,122 @@ Step 6 — Translation        (none / English / Arabic / both)
 Step 7 — Output Directory   (default: ~/urdu_transcripts)
 ```
 
+### 🚀 Command-Line Mode (Non-Interactive)
+
+For automation and background execution, pass arguments directly:
+
+```bash
+bash urdu.sh "URL" "MODEL" "LANGUAGE" "FORMAT" "TRANSLATE" "OUTPUT_DIR"
+```
+
+**Parameters:**
+
+| # | Parameter | Values | Default | Description |
+|---|-----------|--------|---------|-------------|
+| 1 | **URL** | YouTube link | Required | Video or playlist URL |
+| 2 | **MODEL** | 1-6 | 5 | `1=tiny, 2=base, 3=small, 4=medium, 5=large-v3-turbo, 6=large-v3` |
+| 3 | **LANGUAGE** | Language name | Urdu | `Urdu, Arabic, English, French, Hindi, Turkish, Persian, Russian, Chinese, Japanese, Korean, Spanish` |
+| 4 | **FORMAT** | 1-4 | 1 | `1=SRT, 2=TXT, 3=SRT+TXT, 4=VTT` |
+| 5 | **TRANSLATE** | 1-4 | 1 | `1=No translation, 2=English only, 3=Arabic only, 4=Both` |
+| 6 | **OUTPUT_DIR** | Path | `~/urdu_transcripts/data` | Where files are saved (optional) |
+
+#### Examples:
+
+**Single video with SRT only:**
+```bash
+bash urdu.sh "https://www.youtube.com/watch?v=abc123" "5" "Urdu" "1" "1"
+```
+
+**Playlist with English translation:**
+```bash
+bash urdu.sh "https://www.youtube.com/playlist?list=xyz789" "5" "Urdu" "1" "2"
+```
+
+**Both English & Arabic, custom output:**
+```bash
+bash urdu.sh "https://www.youtube.com/watch?v=abc123" "5" "Urdu" "1" "4" "/mnt/transcripts"
+```
+
+### 🔄 Run in Background
+
+#### Using `nohup` (Recommended — continues if terminal closes):
+```bash
+nohup bash urdu.sh "https://www.youtube.com/watch?v=abc123" "5" "Urdu" "1" "4" > /tmp/transcript.log 2>&1 &
+```
+
+#### Using `screen` (Detachable session):
+```bash
+screen -S transcribe -d -m bash urdu.sh "https://www.youtube.com/watch?v=abc123" "5" "Urdu" "1" "4"
+# Reattach with: screen -r transcribe
+```
+
+#### Monitor progress:
+```bash
+tail -f /tmp/transcript.log
+```
+
+### 📜 Batch Processing Multiple Videos
+
+Create a script `batch.sh`:
+```bash
+#!/bin/bash
+
+VIDEOS=(
+  "https://www.youtube.com/watch?v=video1"
+  "https://www.youtube.com/watch?v=video2"
+  "https://www.youtube.com/watch?v=video3"
+)
+
+for URL in "${VIDEOS[@]}"; do
+  echo "Processing: $URL"
+  nohup bash urdu.sh "$URL" "5" "Urdu" "1" "4" >> /tmp/batch.log 2>&1 &
+  sleep 5  # Wait 5 seconds between submissions
+done
+
+echo "All jobs submitted!"
+```
+
+Run it:
+```bash
+bash batch.sh
+```
+
 ---
 
 ## 📁 Output Structure
 
+Files are organized by **URL** (video or playlist) with separate **audio** and **srt** folders:
+
 ```
-~/urdu_transcripts/
-├── audio/          ← MP3 files (in progress)
-├── srt/            ← SRT files (in progress)
-└── done/           ← completed files (moved here after each video)
-    ├── 1_VideoTitle.mp3
-    ├── 1_VideoTitle.srt
-    ├── 1_VideoTitle_en.srt   ← if English translation enabled
-    ├── 1_VideoTitle_ar.srt   ← if Arabic translation enabled
-    ├── 2_VideoTitle.mp3
-    ├── 2_VideoTitle.srt
-    └── ...
+~/urdu_transcripts/data/
+├── audio/
+│   ├── tmp/                              ← temporary downloads while processing
+│   ├── video_abc123/                     ← organized by video ID
+│   │   ├── 1_VideoTitle.mp3
+│   │   └── 2_OtherVideo.mp3
+│   └── playlist_xyz789/                  ← organized by playlist ID
+│       ├── 1_VideoTitle.mp3
+│       ├── 2_OtherVideo.mp3
+│       └── 3_AnotherVideo.mp3
+└── srt/
+    ├── video_abc123/
+    │   ├── 1_VideoTitle.srt
+    │   ├── 1_VideoTitle_en.srt           ← if English translation enabled
+    │   └── 1_VideoTitle_ar.srt           ← if Arabic translation enabled
+    └── playlist_xyz789/
+        ├── 1_VideoTitle.srt
+        ├── 1_VideoTitle_en.srt
+        ├── 1_VideoTitle_ar.srt
+        ├── 2_OtherVideo.srt
+        └── ...
 ```
 
-Files are moved to `done/` immediately after each video finishes, so you can access completed results while the rest of the playlist is still processing.
+**How it works:**
+1. Audio downloads to `audio/tmp/` while processing
+2. Transcription happens for the audio file
+3. After successful transcription, audio moves from `tmp/` to `audio/{URL_FOLDER}/`
+4. All subtitle files go directly to `srt/{URL_FOLDER}/`
+5. Multiple runs with the same URL add to the same folder — no duplicates!
 
 ---
 
@@ -186,6 +284,21 @@ All installed automatically by the script on first run.
 | `yt-dlp` | YouTube downloader |
 | `faster-whisper` | Speech-to-text transcription |
 | `argostranslate` | English→Arabic translation (only if Arabic selected) |
+
+---
+
+## 📋 Quick Reference
+
+| Use Case | Command |
+|----------|---------|
+| **Interactive setup** | `bash urdu.sh` |
+| **Single video → SRT** | `bash urdu.sh "URL" "5" "Urdu" "1" "1"` |
+| **Single video → SRT + English** | `bash urdu.sh "URL" "5" "Urdu" "1" "2"` |
+| **Playlist → SRT + English + Arabic** | `bash urdu.sh "URL" "5" "Urdu" "1" "4"` |
+| **Background with logging** | `nohup bash urdu.sh "URL" "5" "Urdu" "1" "4" > log.txt 2>&1 &` |
+| **Monitor progress** | `tail -f log.txt` |
+| **List running jobs** | `ps aux \| grep urdu.sh` |
+| **Kill job** | `pkill -f "bash urdu.sh"` |
 
 ---
 
