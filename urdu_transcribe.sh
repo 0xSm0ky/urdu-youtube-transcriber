@@ -79,8 +79,13 @@ echo -e "  ${YELLOW}Press Enter for default (Urdu)${NC}"
 echo -e "  Or type a language: Arabic, English, French, Hindi, Turkish..."
 echo ""
 read -rp "  🌐 Language [default: Urdu]: " LANG_INPUT
-TRANSCRIBE_LANG="${LANG_INPUT:-Urdu}"
-log "Transcription language: $TRANSCRIBE_LANG"
+LANG_NAME="${LANG_INPUT:-Urdu}"
+
+# Map language names to ISO 639-1 codes (Whisper requirement)
+declare -A LANG_CODES=([urdu]="ur" [arabic]="ar" [english]="en" [french]="fr" [hindi]="hi" [turkish]="tr" [persian]="fa" [spanish]="es" [german]="de" [portuguese]="pt" [italian]="it" [dutch]="nl" [russian]="ru" [chinese]="zh" [japanese]="ja")
+LANG_KEY="${LANG_NAME,,}"
+TRANSCRIBE_LANG="${LANG_CODES[$LANG_KEY]:-$LANG_KEY}"
+log "Transcription language: $LANG_NAME (code: $TRANSCRIBE_LANG)"
 
 # ───────────────────────────────────────────────────────
 #  STEP 4 — Whisper Model
@@ -162,13 +167,18 @@ echo ""
 read -rp "  📁 Path (press Enter for default): " CUSTOM_DIR
 OUTPUT_DIR="${CUSTOM_DIR:-$HOME/urdu_transcripts}"
 mkdir -p "$OUTPUT_DIR"
-mkdir -p "$OUTPUT_DIR/srt"
 mkdir -p "$OUTPUT_DIR/audio"
 mkdir -p "$OUTPUT_DIR/done"
+
+# Create subfolder inside srt/ named with sanitized URL (valid on Linux & Windows)
+URL_FOLDER=$(echo "$URL" | sed 's|[^a-zA-Z0-9._-]|_|g' | cut -c1-80)
+SRT_OUTPUT_DIR="$OUTPUT_DIR/srt/$URL_FOLDER"
+mkdir -p "$SRT_OUTPUT_DIR"
+
 log "Output directory: $OUTPUT_DIR"
-log "  📂 srt/   → subtitle files"
-log "  📂 audio/ → audio files"
-log "  📂 done/  → completed (srt + audio) after processing"
+log "  📂 srt/$URL_FOLDER/   → subtitle files"
+log "  📂 audio/             → audio files"
+log "  📂 done/              → completed (srt + audio) after processing"
 
 # ───────────────────────────────────────────────────────
 #  INSTALL DEPENDENCIES
@@ -250,7 +260,7 @@ transcribe_audio() {
 
   for FMT in "${FORMATS[@]}"; do
     local EXT="$FMT"
-    local OUT_FILE="$OUTPUT_DIR/srt/${OUT_NAME}.${EXT}"
+    local OUT_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}.${EXT}"
 
     # faster-whisper via python — uses int8 quantization for max CPU speed
     python3 << PYEOF
@@ -260,7 +270,7 @@ import sys
 model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
 segments, info = model.transcribe(
     "$AUDIO_FILE",
-    language="${TRANSCRIBE_LANG,,}",
+    language="$TRANSCRIBE_LANG",
     beam_size=5,
     vad_filter=True,
     vad_parameters=dict(min_silence_duration_ms=500)
@@ -296,14 +306,14 @@ PYEOF
 
   # ── English translation (Whisper built-in, only to English) ──
   if $TRANSLATE_EN; then
-    local EN_FILE="$OUTPUT_DIR/srt/${OUT_NAME}_en.srt"
+    local EN_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}_en.srt"
     python3 << PYEOF
 from faster_whisper import WhisperModel
 
 model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
 segments, _ = model.transcribe(
     "$AUDIO_FILE",
-    language="${TRANSCRIBE_LANG,,}",
+    language="$TRANSCRIBE_LANG",
     task="translate",
     beam_size=5,
     vad_filter=True,
@@ -327,12 +337,12 @@ PYEOF
 
   # ── Arabic translation (Whisper→English first, then ArgosTranslate en→ar with RTL) ──
   if $TRANSLATE_AR; then
-    local AR_FILE="$OUTPUT_DIR/srt/${OUT_NAME}_ar.srt"
-    local TEMP_EN_FILE="$OUTPUT_DIR/srt/${OUT_NAME}_temp_en.srt"
+    local AR_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}_ar.srt"
+    local TEMP_EN_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}_temp_en.srt"
 
     # Step 1: get English from Whisper (reuse if already done)
-    if $TRANSLATE_EN && [ -f "$OUTPUT_DIR/srt/${OUT_NAME}_en.srt" ]; then
-      TEMP_EN_FILE="$OUTPUT_DIR/srt/${OUT_NAME}_en.srt"
+    if $TRANSLATE_EN && [ -f "$SRT_OUTPUT_DIR/${OUT_NAME}_en.srt" ]; then
+      TEMP_EN_FILE="$SRT_OUTPUT_DIR/${OUT_NAME}_en.srt"
       CLEANUP_TEMP=false
     else
       CLEANUP_TEMP=true
@@ -342,7 +352,7 @@ from faster_whisper import WhisperModel
 model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
 segments, _ = model.transcribe(
     "$AUDIO_FILE",
-    language="${TRANSCRIBE_LANG,,}",
+    language="$TRANSCRIBE_LANG",
     task="translate",
     beam_size=5,
     vad_filter=True,
@@ -452,7 +462,7 @@ if [ "$PLAYLIST_MODE" = true ]; then
       transcribe_audio "$AUDIO_FILE" "$SAFE_TITLE"
       # Move completed srt + audio to done/
       mv "$AUDIO_FILE" "$OUTPUT_DIR/done/${SAFE_TITLE}.mp3" 2>/dev/null || true
-      for F in "$OUTPUT_DIR/srt/${SAFE_TITLE}".*; do
+      for F in "$SRT_OUTPUT_DIR/${SAFE_TITLE}".*; do
         [ -f "$F" ] && mv "$F" "$OUTPUT_DIR/done/" 2>/dev/null || true
       done
       log "Moved to done/: $SAFE_TITLE"
@@ -476,7 +486,7 @@ else
     transcribe_audio "$AUDIO_FILE" "$TITLE"
     # Move completed srt + audio to done/
     mv "$AUDIO_FILE" "$OUTPUT_DIR/done/${TITLE}.mp3" 2>/dev/null || true
-    for F in "$OUTPUT_DIR/srt/${TITLE}".*; do
+    for F in "$SRT_OUTPUT_DIR/${TITLE}".*; do
       [ -f "$F" ] && mv "$F" "$OUTPUT_DIR/done/" 2>/dev/null || true
     done
     log "Moved to done/: $TITLE"
