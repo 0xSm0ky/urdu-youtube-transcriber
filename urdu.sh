@@ -20,51 +20,179 @@ err()     { echo -e "${RED}[✘]${NC} $1"; exit 1; }
 section() { echo -e "\n${CYAN}${BOLD}── $1 ──${NC}"; }
 
 # ───────────────────────────────────────────────────────
-#  BANNER
+#  USAGE & HELP
 # ───────────────────────────────────────────────────────
-clear
-echo -e "${CYAN}${BOLD}"
-echo "  ╔═══════════════════════════════════════════╗"
-echo "  ║     Urdu YouTube Transcriber 🎙️            ║"
-echo "  ║  faster-whisper + yt-dlp + ArgosTranslate ║"
-echo "  ╚═══════════════════════════════════════════╝"
-echo -e "${NC}"
+usage() {
+  cat << 'EOF'
+
+  ╔═══════════════════════════════════════════════════════════════════╗
+  ║          Urdu YouTube Transcriber 🎙️ CLI Tool                     ║
+  ║       faster-whisper + yt-dlp + ArgosTranslate                   ║
+  ╚═══════════════════════════════════════════════════════════════════╝
+
+USAGE:
+  urdu.sh -u <URL> [OPTIONS]
+
+REQUIRED FLAGS:
+  -u, --url <URL>           YouTube video or playlist URL
+
+OPTIONAL FLAGS:
+  -m, --model <1-6>         Whisper model (default: 5)
+                            1=tiny, 2=base, 3=small, 4=medium
+                            5=large-v3-turbo, 6=large-v3
+  
+  -l, --language <LANG>     Transcription language (default: Urdu)
+                            Urdu, Arabic, English, French, Hindi, Turkish, Persian, etc.
+  
+  -f, --format <1-4>        Output format (default: 1)
+                            1=SRT, 2=TXT, 3=SRT+TXT, 4=VTT
+  
+  -t, --translate <1-4>     Translation (default: 1)
+                            1=No translation, 2=English only
+                            3=Arabic only, 4=Both
+  
+  -o, --output <PATH>       Output directory (default: ~/urdu_transcripts/data)
+  
+  -c, --cookies <PATH>      Path to cookies.txt (auto-detects in script dir)
+  
+  -F, --foreground          Run in foreground (default: background)
+  
+  -L, --log <PATH>          Log file path (default: /tmp/urdu_transcribe.log)
+  
+  -h, --help                Show this help message
+  
+  -v, --verbose             Enable verbose output
+
+EXAMPLES:
+  # Single video with default settings (runs in background)
+  urdu.sh -u "https://www.youtube.com/watch?v=abc123"
+  
+  # Playlist with English translation
+  urdu.sh -u "https://www.youtube.com/playlist?list=xyz" -t 2
+  
+  # Both languages, large model, foreground mode
+  urdu.sh -u "https://youtu.be/abc123" -m 6 -t 4 -F
+  
+  # Custom output folder with logging
+  urdu.sh -u "https://youtu.be/abc123" -o /mnt/transcripts -L /var/log/transcribe.log
+  
+  # Monitor background job
+  tail -f /tmp/urdu_transcribe.log
+
+EOF
+  exit 0
+}
 
 # ───────────────────────────────────────────────────────
-#  COMMAND-LINE ARGUMENTS (Optional)
+#  PARSE COMMAND-LINE FLAGS
 # ───────────────────────────────────────────────────────
-# Usage: bash urdu.sh [URL] [MODEL] [LANG] [FORMAT] [TRANSLATE] [OUTPUT_DIR]
-# Example: bash urdu.sh "https://youtu.be/abc123" "5" "ur" "1" "1" "$HOME/urdu_transcripts/data"
+URL=""
+MODEL_CHOICE="5"
+LANG_INPUT="Urdu"
+FORMAT_CHOICE="1"
+TRANS_CHOICE="1"
+CUSTOM_DIR=""
+COOKIES_PATH=""
+FOREGROUND=false
+LOG_FILE="/tmp/urdu_transcribe.log"
+VERBOSE=false
 
-if [ $# -ge 1 ]; then
-  # Command-line mode (non-interactive)
-  URL="${1}"
-  MODEL_CHOICE="${2:-5}"
-  LANG_INPUT="${3:-Urdu}"
-  FORMAT_CHOICE="${4:-1}"
-  TRANS_CHOICE="${5:-1}"
-  CUSTOM_DIR="${6:-}"
-  INTERACTIVE=false
-else
-  # Interactive mode
-  INTERACTIVE=true
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -u|--url)
+      URL="$2"
+      shift 2
+      ;;
+    -m|--model)
+      MODEL_CHOICE="$2"
+      shift 2
+      ;;
+    -l|--language)
+      LANG_INPUT="$2"
+      shift 2
+      ;;
+    -f|--format)
+      FORMAT_CHOICE="$2"
+      shift 2
+      ;;
+    -t|--translate)
+      TRANS_CHOICE="$2"
+      shift 2
+      ;;
+    -o|--output)
+      CUSTOM_DIR="$2"
+      shift 2
+      ;;
+    -c|--cookies)
+      COOKIES_PATH="$2"
+      shift 2
+      ;;
+    -F|--foreground)
+      FOREGROUND=true
+      shift
+      ;;
+    -L|--log)
+      LOG_FILE="$2"
+      shift 2
+      ;;
+    -v|--verbose)
+      VERBOSE=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      echo -e "${RED}[✘] Unknown option: $1${NC}" >&2
+      echo "Use -h or --help for usage information"
+      exit 1
+      ;;
+  esac
+done
+
+# ───────────────────────────────────────────────────────
+#  VALIDATE REQUIRED FLAGS
+# ───────────────────────────────────────────────────────
+[ -z "$URL" ] && err "Required flag -u/--url not provided. Use -h for help."
+
+# ───────────────────────────────────────────────────────
+#  RUN IN BACKGROUND BY DEFAULT (unless -F flag set)
+# ───────────────────────────────────────────────────────
+if [ "$FOREGROUND" = false ] && [ -t 1 ]; then
+  # Not in foreground and connected to terminal, run in background
+  nohup "$0" "$@" -F > "$LOG_FILE" 2>&1 &
+  PID=$!
+  echo -e "${GREEN}[✔] Job started in background${NC}"
+  echo -e "${GREEN}    PID: $PID${NC}"
+  echo -e "${GREEN}    Log: $LOG_FILE${NC}"
+  echo -e "${GREEN}${BOLD}Monitor with: tail -f $LOG_FILE${NC}"
+  exit 0
 fi
 
 # ───────────────────────────────────────────────────────
-#  STEP 1 — YouTube URL
+#  BANNER
 # ───────────────────────────────────────────────────────
-if [ "$INTERACTIVE" = true ]; then
-  section "Step 1: YouTube URL"
-  echo -e "  Paste a ${BOLD}single video URL${NC} or a ${BOLD}playlist URL${NC}:"
-  echo -e "  ${YELLOW}Example:${NC} https://youtube.com/watch?v=xxxx"
-  echo -e "  ${YELLOW}Example:${NC} https://youtube.com/playlist?list=xxxx"
-  echo ""
-  read -rp "  🔗 URL: " URL
-  [ -z "$URL" ] && err "No URL provided."
-else
-  section "Step 1: YouTube URL (from command-line argument)"
-  log "URL: $URL"
-  [ -z "$URL" ] && err "No URL provided."
+if [ "$FOREGROUND" = true ]; then
+  clear
+  echo -e "${CYAN}${BOLD}"
+  echo "  ╔═══════════════════════════════════════════╗"
+  echo "  ║     Urdu YouTube Transcriber 🎙️            ║"
+  echo "  ║  faster-whisper + yt-dlp + ArgosTranslate ║"
+  echo "  ╚═══════════════════════════════════════════╝"
+  echo -e "${NC}"
+fi
+
+# ───────────────────────────────────────────────────────
+#  SETUP LOGGING
+# ───────────────────────────────────────────────────────
+if [ "$FOREGROUND" = false ]; then
+  # Redirect output to log file
+  exec > >(tee -a "$LOG_FILE")
+  exec 2>&1
+  echo "=== Urdu YouTube Transcriber Started ===" >> "$LOG_FILE"
+  echo "Time: $(date)" >> "$LOG_FILE"
+  echo "URL: $URL" >> "$LOG_FILE"
+  echo "Model: $MODEL_CHOICE, Format: $FORMAT_CHOICE, Translate: $TRANS_CHOICE" >> "$LOG_FILE"
 fi
 
 # ───────────────────────────────────────────────────────
@@ -72,7 +200,6 @@ fi
 # ───────────────────────────────────────────────────────
 sanitize_folder_name() {
   local name="$1"
-  # Remove special characters, keep alphanumeric, dash, underscore
   echo "$name" | tr -cd '[:alnum:]_-' | cut -c1-100
 }
 
@@ -88,81 +215,44 @@ else
   URL_TYPE="unknown"
 fi
 
-# Create safe folder name from URL
 URL_FOLDER_NAME="$(sanitize_folder_name "${URL_TYPE}_${URL_ID}")"
 log "URL Folder Name: $URL_FOLDER_NAME"
 
 # ───────────────────────────────────────────────────────
-#  STEP 2 — Cookies (auto-detect in script dir)
+#  HANDLE COOKIES
 # ───────────────────────────────────────────────────────
-if [ "$INTERACTIVE" = true ]; then
-  section "Step 2: YouTube Authentication"
-fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTO_COOKIES="$SCRIPT_DIR/cookies.txt"
 COOKIES_ARG=""
 
-if [ -f "$AUTO_COOKIES" ]; then
+if [ -n "$COOKIES_PATH" ] && [ -f "$COOKIES_PATH" ]; then
+  COOKIES_ARG="--cookies $COOKIES_PATH"
+  log "Cookies loaded: $COOKIES_PATH"
+elif [ -f "$AUTO_COOKIES" ]; then
   COOKIES_ARG="--cookies $AUTO_COOKIES"
   log "cookies.txt found — using automatically ✅"
-elif [ "$INTERACTIVE" = true ]; then
-  echo -e "  No cookies.txt found in script directory."
-  echo -e "  ${YELLOW}[1]${NC} Continue without cookies"
-  echo -e "  ${YELLOW}[2]${NC} Provide path to cookies.txt manually"
-  echo ""
-  read -rp "  Choice [1/2, default=1]: " COOKIE_CHOICE
-  if [ "$COOKIE_CHOICE" = "2" ]; then
-    read -rp "  📁 Path to cookies.txt: " COOKIES_PATH
-    if [ -f "$COOKIES_PATH" ]; then
-      COOKIES_ARG="--cookies $COOKIES_PATH"
-      log "Cookies loaded: $COOKIES_PATH"
-    else
-      warn "File not found — continuing without cookies."
-    fi
-  fi
+else
+  warn "No cookies.txt found (will try without authentication)"
 fi
 
 # ───────────────────────────────────────────────────────
-#  STEP 3 — Transcription Language (default: Urdu)
+#  PROCESS OPTIONS
 # ───────────────────────────────────────────────────────
-if [ "$INTERACTIVE" = true ]; then
-  section "Step 3: Transcription Language"
-  echo -e "  What language is spoken in the video?"
-  echo -e "  ${YELLOW}Press Enter for default (Urdu)${NC}"
-  echo -e "  Or type a language: Arabic, English, French, Hindi, Turkish..."
-  echo ""
-  read -rp "  🌐 Language [default: Urdu]: " LANG_INPUT
-else
-  section "Step 3: Transcription Language (from command-line argument)"
-  log "Language: $LANG_INPUT"
-fi
+log "Configuration:"
+log "  Language: $LANG_INPUT"
+log "  Model: $MODEL_CHOICE"
+log "  Format: $FORMAT_CHOICE"
+log "  Translate: $TRANS_CHOICE"
+[ "$FOREGROUND" = true ] && log "  Mode: Foreground" || log "  Mode: Background"
+
+# Language processing
 LANG_NAME="${LANG_INPUT:-Urdu}"
 declare -A LANG_CODES=([urdu]="ur" [arabic]="ar" [english]="en" [french]="fr" [hindi]="hi" [turkish]="tr" [persian]="fa" [russian]="ru" [chinese]="zh" [japanese]="ja" [korean]="ko" [spanish]="es")
 LANG_KEY="${LANG_NAME,,}"
 TRANSCRIBE_LANG="${LANG_CODES[$LANG_KEY]:-$LANG_KEY}"
-log "Transcription language: $TRANSCRIBE_LANG"
 
-# ───────────────────────────────────────────────────────
-#  STEP 4 — Whisper Model
-# ───────────────────────────────────────────────────────
-if [ "$INTERACTIVE" = true ]; then
-  section "Step 4: Whisper Model"
-  echo -e "  Choose transcription model:"
-  echo ""
-  echo -e "  ${YELLOW}[1]${NC} tiny           — Fastest, lower accuracy   (~75MB)"
-  echo -e "  ${YELLOW}[2]${NC} base           — Fast, decent accuracy      (~150MB)"
-  echo -e "  ${YELLOW}[3]${NC} small          — Balanced                   (~500MB)"
-  echo -e "  ${YELLOW}[4]${NC} medium         — Good accuracy              (~1.5GB)"
-  echo -e "  ${YELLOW}[5]${NC} large-v3-turbo — Fast + high accuracy       (~1.6GB) ← recommended"
-  echo -e "  ${YELLOW}[6]${NC} large-v3       — Best accuracy              (~3GB)"
-  echo ""
-  read -rp "  Choice [1-6, default=5]: " MODEL_CHOICE
-else
-  section "Step 4: Whisper Model (from command-line argument)"
-  log "Model choice: $MODEL_CHOICE"
-fi
-
+# Model selection
 case "$MODEL_CHOICE" in
   1) MODEL="tiny" ;;
   2) MODEL="base" ;;
@@ -171,52 +261,16 @@ case "$MODEL_CHOICE" in
   6) MODEL="large-v3" ;;
   *) MODEL="large-v3-turbo" ;;
 esac
-log "Model selected: $MODEL"
 
-# ───────────────────────────────────────────────────────
-#  STEP 5 — Output Format
-# ───────────────────────────────────────────────────────
-if [ "$INTERACTIVE" = true ]; then
-  section "Step 5: Output Format"
-  echo -e "  What subtitle format do you want?"
-  echo ""
-  echo -e "  ${YELLOW}[1]${NC} SRT only       — Standard subtitle (.srt) ← recommended"
-  echo -e "  ${YELLOW}[2]${NC} TXT only       — Plain transcript (.txt)"
-  echo -e "  ${YELLOW}[3]${NC} Both SRT + TXT"
-  echo -e "  ${YELLOW}[4]${NC} VTT only       — Web subtitles (.vtt)"
-  echo ""
-  read -rp "  Choice [1-4, default=1]: " FORMAT_CHOICE
-else
-  section "Step 5: Output Format (from command-line argument)"
-  log "Format choice: $FORMAT_CHOICE"
-fi
-
+# Format selection
 case "$FORMAT_CHOICE" in
   2) FORMATS=("txt") ;;
   3) FORMATS=("srt" "txt") ;;
   4) FORMATS=("vtt") ;;
   *) FORMATS=("srt") ;;
 esac
-log "Output format(s): ${FORMATS[*]}"
 
-# ───────────────────────────────────────────────────────
-#  STEP 6 — Translation
-# ───────────────────────────────────────────────────────
-if [ "$INTERACTIVE" = true ]; then
-  section "Step 6: Translation"
-  echo -e "  Do you want to translate the transcript?"
-  echo ""
-  echo -e "  ${YELLOW}[1]${NC} No translation"
-  echo -e "  ${YELLOW}[2]${NC} English only       (fast — built into Whisper)"
-  echo -e "  ${YELLOW}[3]${NC} Arabic only        (RTL — via ArgosTranslate)"
-  echo -e "  ${YELLOW}[4]${NC} Both English + Arabic"
-  echo ""
-  read -rp "  Choice [1-4, default=1]: " TRANS_CHOICE
-else
-  section "Step 6: Translation (from command-line argument)"
-  log "Translation choice: $TRANS_CHOICE"
-fi
-
+# Translation selection
 TRANSLATE_EN=false
 TRANSLATE_AR=false
 case "$TRANS_CHOICE" in
@@ -225,25 +279,15 @@ case "$TRANS_CHOICE" in
   4) TRANSLATE_EN=true; TRANSLATE_AR=true ;;
 esac
 
-if $TRANSLATE_EN; then log "English translation: enabled"; fi
-if $TRANSLATE_AR; then log "Arabic translation: enabled (RTL)"; fi
+if $TRANSLATE_EN; then log "  English translation: enabled"; fi
+if $TRANSLATE_AR; then log "  Arabic translation: enabled (RTL)"; fi
 
 # ───────────────────────────────────────────────────────
-#  STEP 7 — Output Directory
+#  SETUP OUTPUT DIRECTORIES
 # ───────────────────────────────────────────────────────
-if [ "$INTERACTIVE" = true ]; then
-  section "Step 7: Output Directory"
-  echo -e "  Where should transcripts be saved?"
-  echo -e "  ${YELLOW}[default: $HOME/urdu_transcripts/data]${NC}"
-  echo ""
-  read -rp "  📁 Base Path (press Enter for default): " CUSTOM_DIR
-else
-  section "Step 7: Output Directory (from command-line argument)"
-  [ -n "$CUSTOM_DIR" ] && log "Output directory: $CUSTOM_DIR" || log "Using default output directory"
-fi
 BASE_OUTPUT_DIR="${CUSTOM_DIR:-$HOME/urdu_transcripts/data}"
+log "Output directory: $BASE_OUTPUT_DIR"
 
-# Create directory structure: BASE_OUTPUT_DIR/audio/URL_FOLDER/ and BASE_OUTPUT_DIR/srt/URL_FOLDER/
 AUDIO_FOLDER="$BASE_OUTPUT_DIR/audio"
 SRT_FOLDER="$BASE_OUTPUT_DIR/srt"
 AUDIO_TEMP_DIR="$AUDIO_FOLDER/tmp"
@@ -562,9 +606,11 @@ if [ "$PLAYLIST_MODE" = true ]; then
       warn "Transcribing... ($IDX/$TOTAL)"
       transcribe_audio "$TEMP_AUDIO_FILE" "$SAFE_TITLE"
       
-      # Move from temp to URL folder after transcription
-      mv "$TEMP_AUDIO_FILE" "$AUDIO_URL_DIR/${SAFE_TITLE}.mp3" 2>/dev/null || true
-      log "Moved to permanent: audio/$URL_FOLDER_NAME/$SAFE_TITLE.mp3"
+      # Delete audio file after successful transcription
+      if [ -f "$TEMP_AUDIO_FILE" ]; then
+        rm -f "$TEMP_AUDIO_FILE"
+        log "Deleted: $SAFE_TITLE.mp3 (audio removed after transcription)"
+      fi
       SUCCESS=$((SUCCESS + 1))
     else
       warn "Skipped (download failed): $VID_ID"
@@ -586,14 +632,24 @@ else
     warn "Transcribing..."
     transcribe_audio "$TEMP_AUDIO_FILE" "$TITLE"
     
-    # Move from temp to URL folder after transcription
-    mv "$TEMP_AUDIO_FILE" "$AUDIO_URL_DIR/${TITLE}.mp3" 2>/dev/null || true
-    log "Moved to permanent: audio/$URL_FOLDER_NAME/$TITLE.mp3"
+    # Delete audio file after successful transcription
+    if [ -f "$TEMP_AUDIO_FILE" ]; then
+      rm -f "$TEMP_AUDIO_FILE"
+      log "Deleted: ${TITLE}.mp3 (audio removed after transcription)"
+    fi
     SUCCESS=1
   else
     rm -f "$TEMP_AUDIO_FILE"
     err "Download failed. Check cookies.txt is fresh and node is installed."
   fi
+fi
+
+# ───────────────────────────────────────────────────────
+#  CLEAN UP EMPTY TEMP FOLDER
+# ───────────────────────────────────────────────────────
+if [ -d "$AUDIO_TEMP_DIR" ] && [ -z "$(ls -A "$AUDIO_TEMP_DIR" 2>/dev/null)" ]; then
+  rmdir "$AUDIO_TEMP_DIR" 2>/dev/null
+  log "Removed empty temp folder: $AUDIO_TEMP_DIR"
 fi
 
 # ───────────────────────────────────────────────────────
