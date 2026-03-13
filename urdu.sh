@@ -12,12 +12,67 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
+BLUE='\033[0;34m'
+GRAY='\033[0;37m'
 NC='\033[0m'
 
-log()     { echo -e "${GREEN}[✔]${NC} $1"; }
-warn()    { echo -e "${YELLOW}[!]${NC} $1"; }
-err()     { echo -e "${RED}[✘]${NC} $1"; exit 1; }
-section() { echo -e "\n${CYAN}${BOLD}── $1 ──${NC}"; }
+# ═══════════════════════════════════════════════════════
+#  LOGGING & DEBUGGING FUNCTIONS
+# ═══════════════════════════════════════════════════════
+
+_get_timestamp() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+
+_get_timestamp_iso() {
+  echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+}
+
+log()     { 
+  echo -e "${GREEN}[✔]${NC} $1"
+  [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [OK] $1" >> "$LOG_FILE"
+}
+
+warn()    { 
+  echo -e "${YELLOW}[!]${NC} $1" >&2
+  [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [WARN] $1" >> "$LOG_FILE"
+}
+
+err()     { 
+  echo -e "${RED}[✘]${NC} $1" >&2
+  [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [ERROR] $1" >> "$LOG_FILE"
+  exit 1
+}
+
+debug()   {
+  if [ "$VERBOSE" = true ]; then
+    echo -e "${BLUE}[DEBUG]${NC} $1" >&2
+    [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [DEBUG] $1" >> "$LOG_FILE"
+  fi
+}
+
+section() { 
+  echo -e "\n${CYAN}${BOLD}── $1 ──${NC}"
+  [ -n "$LOG_FILE" ] && echo "" >> "$LOG_FILE" && echo "$(_get_timestamp) [SECTION] ── $1 ──" >> "$LOG_FILE"
+}
+
+info()    {
+  echo -e "${BLUE}[i]${NC} $1"
+  [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [INFO] $1" >> "$LOG_FILE"
+}
+
+success() {
+  echo -e "${GREEN}[✓]${NC} $1"
+  [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [SUCCESS] $1" >> "$LOG_FILE"
+}
+
+trace()   {
+  if [ "$VERBOSE" = true ]; then
+    echo -e "${GRAY}[TRACE]${NC} ${BASH_SOURCE[2]##*/}:${BASH_LINENO[1]} in ${FUNCNAME[1]}()"
+    echo -e "${GRAY}         $1${NC}"
+    [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [TRACE] ${BASH_SOURCE[2]##*/}:${BASH_LINENO[1]} in ${FUNCNAME[1]}() - $1" >> "$LOG_FILE"
+  fi
+}
 
 # ───────────────────────────────────────────────────────
 #  USAGE & HELP
@@ -156,6 +211,82 @@ done
 [ -z "$URL" ] && err "Required flag -u/--url not provided. Use -h for help."
 
 # ───────────────────────────────────────────────────────
+#  SYSTEM DIAGNOSTICS & LOGGING
+# ───────────────────────────────────────────────────────
+check_system_resources() {
+  local total_ram=$(free -b | awk 'NR==2 {print $2}')
+  local available_ram=$(free -b | awk 'NR==2 {print $7}')
+  local total_disk=$(df / | awk 'NR==2 {print $2}')
+  local available_disk=$(df / | awk 'NR==2 {print $4}')
+  local cpu_cores=$(nproc 2>/dev/null || echo "unknown")
+  
+  debug "System Resources:"
+  debug "  Total RAM: $(numfmt --to=iec $total_ram 2>/dev/null || echo $((total_ram / 1024 / 1024))MB)"
+  debug "  Available RAM: $(numfmt --to=iec $available_ram 2>/dev/null || echo $((available_ram / 1024 / 1024))MB)"
+  debug "  Total Disk: $(numfmt --to=iec $total_disk 2>/dev/null || echo $((total_disk / 1024 / 1024))MB)"
+  debug "  Available Disk: $(numfmt --to=iec $available_disk 2>/dev/null || echo $((available_disk / 1024 / 1024))MB)"
+  debug "  CPU Cores: $cpu_cores"
+  
+  # Warn if low disk space
+  if [ "$available_disk" -lt 5242880 ]; then
+    warn "Low disk space available (< 5GB). Transcription may fail."
+  fi
+}
+
+log_environment() {
+  debug "Environment Information:"
+  debug "  Bash Version: ${BASH_VERSION}"
+  debug "  Working Directory: $(pwd)"
+  debug "  User: $(whoami)"
+  debug "  Hostname: $(hostname)"
+  debug "  Kernel: $(uname -r)"
+}
+
+log_script_start() {
+  echo "" >> "$LOG_FILE"
+  echo "═════════════════════════════════════════════════════════" >> "$LOG_FILE"
+  echo "Urdu YouTube Transcriber - Session Start" >> "$LOG_FILE"
+  echo "═════════════════════════════════════════════════════════" >> "$LOG_FILE"
+  echo "Start Time:    $(_get_timestamp)" >> "$LOG_FILE"
+  echo "Start Time (ISO): $(_get_timestamp_iso)" >> "$LOG_FILE"
+  echo "Script Version: 2.0" >> "$LOG_FILE"
+  echo "Script PID:    $$" >> "$LOG_FILE"
+  echo "User:          $(whoami)" >> "$LOG_FILE"
+  echo "Working Dir:   $(pwd)" >> "$LOG_FILE"
+  echo "Hostname:      $(hostname)" >> "$LOG_FILE"
+  echo "" >> "$LOG_FILE"
+}
+
+log_configuration() {
+  echo "Configuration:" >> "$LOG_FILE"
+  echo "  URL: $URL" >> "$LOG_FILE"
+  echo "  Model: $MODEL_CHOICE ($MODEL)" >> "$LOG_FILE"
+  echo "  Language: $LANG_INPUT ($LANG_KEY → $TRANSCRIBE_LANG)" >> "$LOG_FILE"
+  echo "  Format: $FORMAT_CHOICE (${FORMATS[*]})" >> "$LOG_FILE"
+  echo "  Translation: EN=$TRANSLATE_EN, AR=$TRANSLATE_AR" >> "$LOG_FILE"
+  echo "  Output Dir: $BASE_OUTPUT_DIR" >> "$LOG_FILE"
+  echo "  Cookies: ${COOKIES_ARG:-none}" >> "$LOG_FILE"
+  echo "  Log File: $LOG_FILE" >> "$LOG_FILE"
+  echo "  Verbose: $VERBOSE" >> "$LOG_FILE"
+  echo "  Foreground: $FOREGROUND" >> "$LOG_FILE"
+  echo "" >> "$LOG_FILE"
+}
+
+rotate_logs() {
+  if [ -f "$LOG_FILE" ]; then
+    local filesize=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null)
+    # Rotate if larger than 10MB
+    if [ "$filesize" -gt 10485760 ]; then
+      local rotated="${LOG_FILE}.$(date +%s)"
+      mv "$LOG_FILE" "$rotated"
+      debug "Rotated old log to: $rotated"
+      # Keep only last 5 rotated logs
+      ls -t "${LOG_FILE}".* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null
+    fi
+  fi
+}
+
+# ───────────────────────────────────────────────────────
 #  RUN IN BACKGROUND BY DEFAULT (unless -F flag set)
 # ───────────────────────────────────────────────────────
 if [ "$FOREGROUND" = false ] && [ -t 1 ]; then
@@ -187,15 +318,20 @@ fi
 # ───────────────────────────────────────────────────────
 #  SETUP LOGGING
 # ───────────────────────────────────────────────────────
+rotate_logs  # Rotate logs if too large
+
 if [ "$FOREGROUND" = false ]; then
   # Redirect output to log file
   exec > >(tee -a "$LOG_FILE")
   exec 2>&1
-  echo "=== Urdu YouTube Transcriber Started ===" >> "$LOG_FILE"
-  echo "Time: $(date)" >> "$LOG_FILE"
-  echo "URL: $URL" >> "$LOG_FILE"
-  echo "Model: $MODEL_CHOICE, Format: $FORMAT_CHOICE, Translate: $TRANS_CHOICE" >> "$LOG_FILE"
 fi
+
+# Log the session start
+log_script_start
+
+# Check system resources and log environment
+check_system_resources
+log_environment
 
 # ───────────────────────────────────────────────────────
 #  SANITIZE URL FOR FOLDER NAME (Windows + Linux safe)
@@ -290,6 +426,13 @@ if $TRANSLATE_AR; then log "  Arabic translation: enabled (RTL)"; fi
 BASE_OUTPUT_DIR="${CUSTOM_DIR:-$HOME/urdu_transcripts/data}"
 log "Output directory: $BASE_OUTPUT_DIR"
 
+# Log configuration to file
+log_configuration
+
+# Track start time for performance metrics
+SCRIPT_START_TIME=$(date +%s)
+debug "Script start timestamp: $SCRIPT_START_TIME"
+
 AUDIO_FOLDER="$BASE_OUTPUT_DIR/audio"
 SRT_FOLDER="$BASE_OUTPUT_DIR/srt"
 AUDIO_TEMP_DIR="$AUDIO_FOLDER/tmp"
@@ -354,14 +497,18 @@ BASE_YTDLP_ARGS="--js-runtimes node --remote-components ejs:github --extractor-a
 #  DETECT PLAYLIST vs SINGLE
 # ───────────────────────────────────────────────────────
 section "Fetching Video Info"
+debug "Analyzing URL: $URL"
 VIDEO_COUNT=$(yt-dlp --flat-playlist --get-id $BASE_YTDLP_ARGS "$URL" 2>/dev/null | wc -l)
+debug "Video count detected: $VIDEO_COUNT"
 
 if [ "$VIDEO_COUNT" -gt 1 ]; then
   echo -e "  ${CYAN}Playlist detected:${NC} $VIDEO_COUNT videos found."
   PLAYLIST_MODE=true
+  debug "Mode: Playlist"
 else
   echo -e "  ${CYAN}Single video detected.${NC}"
   PLAYLIST_MODE=false
+  debug "Mode: Single video"
 fi
 
 # ───────────────────────────────────────────────────────
@@ -374,10 +521,17 @@ transcribe_audio() {
   # Validate input file exists
   [ ! -f "$AUDIO_FILE" ] && err "Audio file not found: $AUDIO_FILE"
 
+  trace "Starting transcription of: $AUDIO_FILE"
+  debug "Output name: $OUT_NAME"
+  debug "Format(s): ${FORMATS[*]}"
+  debug "Language: $TRANSCRIBE_LANG"
+  debug "Model: $MODEL"
+
   # RAM check
   AVAILABLE_MB=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
   declare -A MODEL_RAM=([tiny]=400 [base]=600 [small]=1200 [medium]=3000 [large-v3-turbo]=3500 [large-v3]=5000)
   REQUIRED_MB=${MODEL_RAM[$MODEL]:-3000}
+  debug "RAM Check: Available=${AVAILABLE_MB}MB, Required=${REQUIRED_MB}MB"
   if [ "$AVAILABLE_MB" -lt "$REQUIRED_MB" ]; then
     warn "⚠️  Low RAM: ${AVAILABLE_MB}MB available, $MODEL needs ~${REQUIRED_MB}MB"
     read -rp "   Continue anyway? [y/N]: " RAMCONTINUE
@@ -389,6 +543,8 @@ transcribe_audio() {
   for FMT in "${FORMATS[@]}"; do
     local EXT="$FMT"
     local OUT_FILE="$SRT_URL_DIR/${OUT_NAME}.${EXT}"
+    
+    debug "Transcribing to format: $FMT → $OUT_FILE"
 
     # faster-whisper via python — uses int8 quantization for max CPU speed
     python3 << PYEOF || err "Transcription failed"
@@ -585,23 +741,29 @@ SUCCESS=0
 if [ "$PLAYLIST_MODE" = true ]; then
   mapfile -t VIDEO_IDS < <(yt-dlp --flat-playlist --get-id $BASE_YTDLP_ARGS "$URL" 2>/dev/null)
   TOTAL=${#VIDEO_IDS[@]}
+  debug "Total videos in playlist: $TOTAL"
   echo -e "  Processing ${BOLD}$TOTAL videos${NC}...\n"
 
   for i in "${!VIDEO_IDS[@]}"; do
     VID_ID="${VIDEO_IDS[$i]}"
     VID_URL="https://www.youtube.com/watch?v=$VID_ID"
     IDX=$((i + 1))
+    
+    debug "Processing video $IDX/$TOTAL: $VID_ID"
 
     echo -e "\n${CYAN}  [$IDX/$TOTAL]${NC} https://youtu.be/$VID_ID"
 
     TITLE=$(yt-dlp --get-title $BASE_YTDLP_ARGS "$VID_URL" 2>/dev/null \
       | tr ' ' '_' | tr -cd '[:alnum:]_-' | cut -c1-60)
     TITLE="${TITLE:-video_${IDX}}"
+    debug "Video title: $TITLE"
 
     SAFE_TITLE="${IDX}_${TITLE}"
+    debug "Safe title: $SAFE_TITLE"
     
     # Download to temp folder
     TEMP_AUDIO_FILE="$AUDIO_TEMP_DIR/${SAFE_TITLE}.mp3"
+    debug "Downloading to: $TEMP_AUDIO_FILE"
 
     if download_audio "$VID_URL" "$TEMP_AUDIO_FILE" && [ -f "$TEMP_AUDIO_FILE" ]; then
       log "Downloaded: $SAFE_TITLE.mp3 (temp)"
@@ -645,6 +807,33 @@ else
     err "Download failed. Check cookies.txt is fresh and node is installed."
   fi
 fi
+
+# ───────────────────────────────────────────────────────
+#  PERFORMANCE SUMMARY
+# ───────────────────────────────────────────────────────
+log_performance_summary() {
+  local end_time=$(date +%s)
+  local elapsed=$((end_time - SCRIPT_START_TIME))
+  local hours=$((elapsed / 3600))
+  local minutes=$(((elapsed % 3600) / 60))
+  local seconds=$((elapsed % 60))
+  
+  echo "" >> "$LOG_FILE"
+  echo "═════════════════════════════════════════════════════════" >> "$LOG_FILE"
+  echo "Session Summary:" >> "$LOG_FILE"
+  echo "═════════════════════════════════════════════════════════" >> "$LOG_FILE"
+  echo "End Time:      $(_get_timestamp)" >> "$LOG_FILE"
+  echo "End Time (ISO): $(_get_timestamp_iso)" >> "$LOG_FILE"
+  echo "Elapsed Time:  ${hours}h ${minutes}m ${seconds}s" >> "$LOG_FILE"
+  echo "Total Seconds: $elapsed" >> "$LOG_FILE"
+  echo "" >> "$LOG_FILE"
+  
+  debug "Performance Summary:"
+  debug "  Total Time: ${hours}h ${minutes}m ${seconds}s"
+  debug "  Output Directory: $BASE_OUTPUT_DIR"
+}
+
+log_performance_summary
 
 # ───────────────────────────────────────────────────────
 #  CLEAN UP EMPTY TEMP FOLDER
