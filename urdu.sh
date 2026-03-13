@@ -160,10 +160,12 @@ done
 # ───────────────────────────────────────────────────────
 if [ "$FOREGROUND" = false ] && [ -t 1 ]; then
   # Not in foreground and connected to terminal, run in background
-  nohup "$0" "$@" -F > "$LOG_FILE" 2>&1 &
-  PID=$!
+  nohup "$0" -u "$URL" -m "$MODEL_CHOICE" -l "$LANG_INPUT" -f "$FORMAT_CHOICE" \
+         -t "$TRANS_CHOICE" -o "$CUSTOM_DIR" -c "$COOKIES_PATH" -L "$LOG_FILE" -F > "$LOG_FILE" 2>&1 &
+  BG_PID=$!
+  sleep 0.2
   echo -e "${GREEN}[✔] Job started in background${NC}"
-  echo -e "${GREEN}    PID: $PID${NC}"
+  echo -e "${GREEN}    PID: $BG_PID${NC}"
   echo -e "${GREEN}    Log: $LOG_FILE${NC}"
   echo -e "${GREEN}${BOLD}Monitor with: tail -f $LOG_FILE${NC}"
   exit 0
