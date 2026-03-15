@@ -1,3 +1,4 @@
-cookies.txt
-
+*.txt
+*.srt
+logs
 data

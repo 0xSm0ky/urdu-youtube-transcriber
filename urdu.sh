@@ -87,9 +87,19 @@ usage() {
 
 USAGE:
   urdu.sh -u <URL> [OPTIONS]
+  urdu.sh --queue <PLAYLIST_FILE> [OPTIONS]  # Queue multiple playlists
 
-REQUIRED FLAGS:
+REQUIRED FLAGS (single URL mode):
   -u, --url <URL>           YouTube video or playlist URL
+
+QUEUE MODE (process multiple playlists):
+  -q, --queue <FILE>        Read playlist file and process all URLs
+                            File format:
+                              Playlist Name:
+                              https://youtube.com/playlist?list=...
+                              
+                              Another Name:
+                              https://youtube.com/playlist?list=...
 
 OPTIONAL FLAGS:
   -m, --model <1-6>         Whisper model (default: 5)
@@ -128,8 +138,11 @@ EXAMPLES:
   # Both languages, large model, foreground mode
   urdu.sh -u "https://youtu.be/abc123" -m 6 -t 4 -F
   
-  # Custom output folder with logging
-  urdu.sh -u "https://youtu.be/abc123" -o /mnt/transcripts -L /var/log/transcribe.log
+  # Queue multiple playlists (runs sequentially in foreground)
+  urdu.sh -q ./next-playlists.txt -m 5 -t 2
+  
+  # Queue with large model
+  urdu.sh --queue ./my-playlists.txt -m 6 -t 4
   
   # Monitor background job
   tail -f /tmp/urdu_transcribe.log
@@ -141,7 +154,10 @@ EOF
 # ───────────────────────────────────────────────────────
 #  PARSE COMMAND-LINE FLAGS
 # ───────────────────────────────────────────────────────
+mkdir -p ./logs 2>/dev/null
+
 URL=""
+QUEUE_FILE=""
 MODEL_CHOICE="5"
 LANG_INPUT="Urdu"
 FORMAT_CHOICE="1"
@@ -149,13 +165,17 @@ TRANS_CHOICE="1"
 CUSTOM_DIR=""
 COOKIES_PATH=""
 FOREGROUND=false
-LOG_FILE="/tmp/urdu_transcribe.log"
+LOG_FILE="./logs/urdu_transcribe.log"
 VERBOSE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -u|--url)
       URL="$2"
+      shift 2
+      ;;
+    -q|--queue)
+      QUEUE_FILE="$2"
       shift 2
       ;;
     -m|--model)
@@ -206,9 +226,96 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ───────────────────────────────────────────────────────
+#  QUEUE FUNCTIONALITY (DEFINED EARLY)
+# ───────────────────────────────────────────────────────
+process_queue_file() {
+  local queue_file="$1"
+  local model="$2"
+  local lang="$3"
+  local trans="$4"
+  local format="$5"
+  
+  [ ! -f "$queue_file" ] && err "Queue file not found: $queue_file"
+  
+  local total=$(wc -l < "$queue_file")
+  [ "$total" -eq 0 ] && err "Queue file is empty"
+  
+  section "PROCESSING QUEUE ($queue_file)"
+  echo -e "Total playlists: $total\n"
+  
+  local idx=1
+  local failed=0
+  
+  while IFS='|' read -r name url; do
+    # Skip empty lines
+    [ -z "$url" ] && continue
+    
+    echo -e "\n${YELLOW}[$idx/$total]${NC} ${BOLD}$name${NC}"
+    echo "URL: $url"
+    
+    if "$0" -u "$url" -m "$model" -l "$lang" -t "$trans" -f "$format"; then
+      log "Completed: $name"
+    else
+      warn "Failed: $name"
+      failed=$((failed + 1))
+    fi
+    
+    idx=$((idx + 1))
+  done < "$queue_file"
+  
+  echo -e "\n${GREEN}${BOLD}═══════════════════════════════════════════${NC}"
+  echo -e "${GREEN}${BOLD}Queue Processing Complete${NC}"
+  echo "  ✔ Succeeded: $((total - failed))/$total"
+  [ "$failed" -gt 0 ] && echo "  ✘ Failed: $failed/$total"
+  echo -e "${GREEN}${BOLD}═══════════════════════════════════════════${NC}\n"
+  
+  exit 0
+}
+
+parse_playlist_file() {
+  local input_file="$1"
+  local output_file="$2"
+  
+  [ ! -f "$input_file" ] && err "Playlist file not found: $input_file"
+  
+  > "$output_file"  # Clear output file
+  local current_name=""
+  
+  while IFS= read -r line; do
+    line="${line%%#*}"  # Strip comments
+    # Trim whitespace from both ends
+    line=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    [ -z "$line" ] && continue
+    
+    if [[ "$line" =~ ^https?:// ]]; then
+      # URL found - add to queue with current name
+      [ -n "$current_name" ] && echo "$current_name|$line" >> "$output_file"
+    elif [[ "$line" =~ :$ ]]; then
+      # Playlist name (ends with :)
+      current_name="${line%:}"
+    fi
+  done < "$input_file"
+  
+  log "Queue created: $output_file"
+  local count=$(wc -l < "$output_file" 2>/dev/null || echo 0)
+  echo "  $count playlists ready"
+}
+
+# ───────────────────────────────────────────────────────
+#  HANDLE QUEUE MODE
+# ───────────────────────────────────────────────────────
+if [ -n "$QUEUE_FILE" ]; then
+  mkdir -p ./logs
+  TEMP_QUEUE="./logs/.queue_temp_$$"
+  parse_playlist_file "$QUEUE_FILE" "$TEMP_QUEUE"
+  process_queue_file "$TEMP_QUEUE" "$MODEL_CHOICE" "$LANG_INPUT" "$TRANS_CHOICE" "$FORMAT_CHOICE"
+  rm -f "$TEMP_QUEUE"
+fi
+
+# ───────────────────────────────────────────────────────
 #  VALIDATE REQUIRED FLAGS
 # ───────────────────────────────────────────────────────
-[ -z "$URL" ] && err "Required flag -u/--url not provided. Use -h for help."
+[ -z "$URL" ] && [ -z "$QUEUE_FILE" ] && err "Required: -u/--url or -q/--queue. Use -h for help."
 
 # ───────────────────────────────────────────────────────
 #  SYSTEM DIAGNOSTICS & LOGGING
@@ -291,8 +398,15 @@ rotate_logs() {
 # ───────────────────────────────────────────────────────
 if [ "$FOREGROUND" = false ] && [ -t 1 ]; then
   # Not in foreground and connected to terminal, run in background
-  nohup "$0" -u "$URL" -m "$MODEL_CHOICE" -l "$LANG_INPUT" -f "$FORMAT_CHOICE" \
-         -t "$TRANS_CHOICE" -o "$CUSTOM_DIR" -c "$COOKIES_PATH" -L "$LOG_FILE" -F > "$LOG_FILE" 2>&1 &
+  if [ -n "$QUEUE_FILE" ]; then
+    # Queue mode
+    nohup "$0" -q "$QUEUE_FILE" -m "$MODEL_CHOICE" -l "$LANG_INPUT" -f "$FORMAT_CHOICE" \
+           -t "$TRANS_CHOICE" -o "$CUSTOM_DIR" -c "$COOKIES_PATH" -L "$LOG_FILE" -F > "$LOG_FILE" 2>&1 &
+  else
+    # Single URL mode
+    nohup "$0" -u "$URL" -m "$MODEL_CHOICE" -l "$LANG_INPUT" -f "$FORMAT_CHOICE" \
+           -t "$TRANS_CHOICE" -o "$CUSTOM_DIR" -c "$COOKIES_PATH" -L "$LOG_FILE" -F > "$LOG_FILE" 2>&1 &
+  fi
   BG_PID=$!
   sleep 0.2
   echo -e "${GREEN}[✔] Job started in background${NC}"
