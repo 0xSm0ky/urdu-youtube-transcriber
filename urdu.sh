@@ -253,7 +253,7 @@ process_queue_file() {
     echo -e "\n${YELLOW}[$idx/$total]${NC} ${BOLD}$name${NC}"
     echo "URL: $url"
     
-    if "$0" -u "$url" -m "$model" -l "$lang" -t "$trans" -f "$format"; then
+    if "$0" -u "$url" -m "$model" -l "$lang" -t "$trans" -f "$format" -F; then
       log "Completed: $name"
     else
       warn "Failed: $name"
@@ -308,6 +308,17 @@ if [ -n "$QUEUE_FILE" ]; then
   mkdir -p ./logs
   TEMP_QUEUE="./logs/.queue_temp_$$"
   parse_playlist_file "$QUEUE_FILE" "$TEMP_QUEUE"
+  if [ "$FOREGROUND" = false ] && [ -t 1 ]; then
+    nohup "$0" -q "$QUEUE_FILE" -m "$MODEL_CHOICE" -l "$LANG_INPUT" -f "$FORMAT_CHOICE"            -t "$TRANS_CHOICE" -o "$CUSTOM_DIR" -c "$COOKIES_PATH" -L "$LOG_FILE" -F > "$LOG_FILE" 2>&1 &
+    BG_PID=$!
+    sleep 0.2
+    echo -e "[0;32m[✔] Queue started in background[0m"
+    echo -e "[0;32m    PID: $BG_PID[0m"
+    echo -e "[0;32m    Log: $LOG_FILE[0m"
+    echo -e "[0;32m[1mMonitor with: tail -f $LOG_FILE[0m"
+    rm -f "$TEMP_QUEUE"
+    exit 0
+  fi
   process_queue_file "$TEMP_QUEUE" "$MODEL_CHOICE" "$LANG_INPUT" "$TRANS_CHOICE" "$FORMAT_CHOICE"
   rm -f "$TEMP_QUEUE"
 fi

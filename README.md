@@ -7,16 +7,18 @@ A **professional-grade CLI tool** that downloads YouTube videos or playlists, tr
 ## ✨ Features
 
 - ✅ **Single video or full playlist** support
+- ✅ **Queue mode** — process multiple playlists from a single file sequentially
 - ✅ **Automatic transcription** using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (4× faster than openai-whisper on CPU)
 - ✅ **Translation** to English (Whisper built-in) and/or Arabic with RTL formatting
 - ✅ **CLI-style interface** with flags (like SQLMap) — no interactive prompts
-- ✅ **Runs in background by default** with automatic logging
+- ✅ **Runs in background by default** with automatic logging via `nohup`
 - ✅ **Auto-detects `cookies.txt`** for YouTube authentication
 - ✅ **RAM check** before transcription to prevent crashes
 - ✅ **Auto-delete audio files** after transcription (saves disk space)
 - ✅ **Organized output** by URL (video/playlist ID)
 - ✅ **Auto-installs** all dependencies on first run
-- ✅ **Professional logging** to files or console
+- ✅ **Professional logging** with timestamps, log rotation (10MB), and verbose/debug mode
+- ✅ **Session performance metrics** — elapsed time logged automatically
 
 ---
 
@@ -81,7 +83,7 @@ The script auto-detects and uses it.
 ./urdu.sh -h
 ```
 
-### Simplest Usage (Runs in background, logs to `/tmp/urdu_transcribe.log`)
+### Simplest Usage (Runs in background, logs to `./logs/urdu_transcribe.log`)
 ```bash
 ./urdu.sh -u "https://www.youtube.com/watch?v=abc123"
 ```
@@ -90,8 +92,11 @@ The script auto-detects and uses it.
 
 ## 📚 CLI Flags
 
-### Required Flags
+### Required Flags (single URL mode)
 - **`-u, --url <URL>`** — YouTube video or playlist URL
+
+### Queue Mode
+- **`-q, --queue <FILE>`** — Read a playlist file and process all URLs sequentially (see [Queue Mode](#-queue-mode) below)
 
 ### Optional Flags
 
@@ -103,10 +108,78 @@ The script auto-detects and uses it.
 | `-t` | `--translate` | 1-4 | 1 | Translation (1=none, 2=EN, 3=AR, 4=both) |
 | `-o` | `--output` | Path | ~/urdu_transcripts/data | Output directory |
 | `-c` | `--cookies` | Path | auto-detect | Custom cookies.txt path |
-| `-F` | `--foreground` | — | false | Run in foreground (no background) |
-| `-L` | `--log` | Path | /tmp/urdu_transcribe.log | Log file path |
-| `-v` | `--verbose` | — | false | Verbose output |
+| `-F` | `--foreground` | — | false | Run in foreground instead of background |
+| `-L` | `--log` | Path | ./logs/urdu_transcribe.log | Log file path |
+| `-v` | `--verbose` | — | false | Enable verbose/debug output |
 | `-h` | `--help` | — | — | Show help menu |
+
+---
+
+## 🔄 Background vs Foreground Mode
+
+By default, the script **runs in the background** using `nohup` so it survives terminal closure.
+
+```bash
+# Default: background (returns immediately, logs to ./logs/)
+./urdu.sh -u "https://youtu.be/abc123"
+# Output:
+# [✔] Job started in background
+#     PID: 12345
+#     Log: ./logs/urdu_transcribe.log
+# Monitor with: tail -f ./logs/urdu_transcribe.log
+```
+
+```bash
+# Foreground: streams output to terminal live
+./urdu.sh -u "https://youtu.be/abc123" -F
+```
+
+> **Note:** A `./logs/` directory is created automatically in the folder where you run the script. The default log path is `./logs/urdu_transcribe.log`, not `/tmp/`.
+
+---
+
+## 📋 Queue Mode
+
+Queue mode lets you process **multiple playlists sequentially** from a single text file. This is the most efficient way to batch-process large collections.
+
+### Queue File Format
+
+Create a plain text file with this structure:
+
+```
+Playlist Name:
+https://www.youtube.com/playlist?list=PLAYLIST_ID_1
+
+Another Playlist:
+https://www.youtube.com/playlist?list=PLAYLIST_ID_2
+
+Third Series:
+https://www.youtube.com/playlist?list=PLAYLIST_ID_3
+```
+
+**Rules:**
+- Playlist name must end with a colon (`:`)
+- URL must appear on the line immediately after the name
+- Blank lines between entries are ignored
+- Lines starting with `#` are treated as comments and ignored
+
+### Queue Examples
+
+```bash
+# Process all playlists in the file with default settings
+./urdu.sh -q ./my-playlists.txt
+
+# Queue with English translation and large model
+./urdu.sh -q ./my-playlists.txt -m 6 -t 2
+
+# Queue with both translations, custom output dir
+./urdu.sh -q ./my-playlists.txt -t 4 -o /mnt/transcripts
+
+# Use long flag
+./urdu.sh --queue ./next-playlists.txt -m 5 -t 4
+```
+
+Queue mode always runs in **foreground** (sequentially) and prints a summary at the end showing how many playlists succeeded or failed.
 
 ---
 
@@ -152,6 +225,11 @@ The script auto-detects and uses it.
 ./urdu.sh -u "https://youtu.be/abc123" -F
 ```
 
+### Verbose/Debug Output
+```bash
+./urdu.sh -u "https://youtu.be/abc123" -v -F
+```
+
 ### Custom Log File
 ```bash
 ./urdu.sh -u "https://youtu.be/abc123" -L /var/log/transcriptions.log
@@ -179,7 +257,7 @@ ps aux | grep urdu.sh
 
 ### Monitor logs in real-time
 ```bash
-tail -f /tmp/urdu_transcribe.log
+tail -f ./logs/urdu_transcribe.log
 ```
 
 ### Kill a job
@@ -189,7 +267,7 @@ pkill -f "urdu.sh"
 
 ### View completed log
 ```bash
-cat /tmp/urdu_transcribe.log
+cat ./logs/urdu_transcribe.log
 ```
 
 ---
@@ -201,7 +279,7 @@ Files are organized by URL with separate audio and srt folders. **Audio files ar
 ```
 ~/urdu_transcripts/data/
 ├── audio/
-│   ├── tmp/                              ← temp downloads (deleted)
+│   ├── tmp/                              ← temp downloads (auto-deleted)
 │   ├── video_abc123/                     ← organized by video ID
 │   │   └── 1_VideoTitle.mp3              ← deleted after transcription ✓
 │   └── playlist_xyz789/                  ← organized by playlist ID
@@ -243,11 +321,13 @@ Choose based on your **RAM availability** and **speed vs accuracy** preference.
 
 Models auto-download on first use and cache at `~/.cache/huggingface/`.
 
+> **Note:** All models run with `int8` quantization and `cpu_threads=2` for best CPU performance. This is automatically configured — no extra flags needed.
+
 ---
 
 ## 🌐 Supported Languages
 
-Type the full language name — the script converts it to language code automatically.
+Type the full language name — the script converts it to language code automatically. For any language not in the list, pass the ISO 639-1 code directly.
 
 | Language | Type This |
 |----------|-----------|
@@ -275,7 +355,49 @@ Type the full language name — the script converts it to language code automati
 | Arabic | ArgosTranslate (`en→ar`) | Local, RTL formatted | Fast |
 | Both | English first, Arabic reuses it | No double run | Fast |
 
-**Note:** Arabic uses two-hop pipeline: Urdu → English (Whisper) → Arabic (ArgosTranslate).
+**Note:** Arabic uses a two-hop pipeline: Source Language → English (Whisper) → Arabic (ArgosTranslate). If English translation is also enabled (`-t 4`), the English SRT is reused for Arabic — no double transcription.
+
+---
+
+## 📊 Logging & Diagnostics
+
+The script writes detailed logs automatically. Log entries include timestamps, log levels, and section markers.
+
+### Log Levels
+
+| Level | Meaning |
+|-------|---------|
+| `[OK]` | Successfully completed step |
+| `[INFO]` | Informational message |
+| `[WARN]` | Non-fatal warning |
+| `[ERROR]` | Fatal error (script exits) |
+| `[DEBUG]` | Verbose detail (only with `-v`) |
+| `[TRACE]` | Function-level tracing (only with `-v`) |
+| `[SECTION]` | Major pipeline stage marker |
+
+### Log Rotation
+
+Logs are **automatically rotated** when they exceed **10MB**. Rotated files are saved as `urdu_transcribe.log.<timestamp>`. The script keeps only the **5 most recent** rotated logs and deletes older ones automatically.
+
+### Session Summary
+
+At the end of every run, the log file records a full session summary including:
+- Start and end timestamps (local + ISO 8601)
+- Total elapsed time (hours, minutes, seconds)
+- Script version, PID, hostname, working directory
+- All configuration options used
+
+### Verbose Mode
+
+Enable with `-v` to see:
+- System RAM and disk availability checks
+- Per-video download and transcription details
+- File paths at every step
+- Function-level trace information
+
+```bash
+./urdu.sh -u "https://youtu.be/abc123" -v -F
+```
 
 ---
 
@@ -297,7 +419,7 @@ for URL in "${VIDEOS[@]}"; do
 done
 
 # Monitor all
-tail -f /tmp/urdu_transcribe.log
+tail -f ./logs/urdu_transcribe.log
 ```
 
 ### Process in Parallel
@@ -336,7 +458,7 @@ wait  # Wait for all to finish
 | `nodejs` | YouTube n-challenge solver |
 | `yt-dlp` | YouTube downloader |
 | `faster-whisper` | Speech-to-text transcription |
-| `argostranslate` | English→Arabic translation (if Arabic selected) |
+| `argostranslate` | English→Arabic translation (only installed if `-t 3` or `-t 4`) |
 
 ---
 
@@ -345,12 +467,13 @@ wait  # Wait for all to finish
 ### Download fails / Bot detection
 - Re-export `cookies.txt` from your browser (they expire)
 - Make sure you're **logged into YouTube** when exporting
-- Replace old file: `cp cookies.txt ./urdu.sh` directory
+- Place the fresh `cookies.txt` in the same directory as `urdu.sh`
 
 ### Whisper process killed (Out of Memory)
 - Choose a **smaller model** (medium or small)
 - Check available RAM: `free -h`
 - Close other applications
+- The script will warn you if RAM is too low before starting
 
 ### `node` not found
 ```bash
@@ -385,6 +508,24 @@ Or use `nohup` explicitly:
 nohup ./urdu.sh -u "https://youtu.be/abc123" -F > log.txt 2>&1 &
 ```
 
+### Queue file not being read correctly
+- Make sure each playlist name ends with a colon (`:`)
+- The URL must be on the line immediately after the name
+- Lines starting with `#` are skipped (comments)
+- Check the parsed queue: the script logs how many playlists were found before starting
+
+### Log file is in the wrong location
+The default log path is `./logs/urdu_transcribe.log` (relative to where you run the script), **not** `/tmp/`. Use `-L` to set a custom path:
+```bash
+./urdu.sh -u "URL" -L /tmp/urdu_transcribe.log
+```
+
+### No speech detected in audio
+If the transcript file is empty, the audio may be silent or the language selection may be wrong. Try:
+- Verifying the video has speech
+- Explicitly setting the language: `-l English` or `-l Arabic`
+- Running with verbose mode to see what Whisper detected: `-v -F`
+
 ---
 
 ## 📋 Quick Reference
@@ -398,8 +539,10 @@ nohup ./urdu.sh -u "https://youtu.be/abc123" -F > log.txt 2>&1 &
 | Fast (small model) | `./urdu.sh -u "URL" -m 3` |
 | Accurate (large model) | `./urdu.sh -u "URL" -m 6` |
 | Custom output | `./urdu.sh -u "URL" -o /path` |
+| Queue playlists | `./urdu.sh -q ./playlists.txt` |
+| Verbose debug | `./urdu.sh -u "URL" -v -F` |
 | Check jobs | `ps aux \| grep urdu.sh` |
-| Monitor log | `tail -f /tmp/urdu_transcribe.log` |
+| Monitor log | `tail -f ./logs/urdu_transcribe.log` |
 | Kill job | `pkill -f "urdu.sh"` |
 
 ---
@@ -409,11 +552,13 @@ nohup ./urdu.sh -u "https://youtu.be/abc123" -F > log.txt 2>&1 &
 1. **Always check help first:** `./urdu.sh -h`
 2. **Start with model 5** (large-v3-turbo) — best balance
 3. **For playlists, use smaller model** (model 3) to save time
-4. **Monitor with:** `tail -f /tmp/urdu_transcribe.log`
+4. **Monitor with:** `tail -f ./logs/urdu_transcribe.log`
 5. **Batch mode:** Run multiple with `&` in background
-6. **Save cookies once** — they're auto-detected
+6. **Save cookies once** — they're auto-detected from the script's directory
 7. **Audio auto-deletes** — only SRT files kept
 8. **Logs are kept** — check them for debugging
+9. **Use queue mode** for processing multiple playlists — cleaner than shell loops
+10. **Add `-v` when debugging** — reveals RAM checks, paths, and Whisper details
 
 ---
 
