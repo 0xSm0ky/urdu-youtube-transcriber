@@ -280,6 +280,7 @@ parse_playlist_file() {
   
   > "$output_file"  # Clear output file
   local current_name=""
+  local url_count=1
   
   while IFS= read -r line; do
     line="${line%%#*}"  # Strip comments
@@ -288,8 +289,17 @@ parse_playlist_file() {
     [ -z "$line" ] && continue
     
     if [[ "$line" =~ ^https?:// ]]; then
-      # URL found - add to queue with current name
-      [ -n "$current_name" ] && echo "$current_name|$line" >> "$output_file"
+      # URL found - use name if provided, otherwise use URL as name
+      if [ -n "$current_name" ]; then
+        echo "$current_name|$line" >> "$output_file"
+        current_name=""
+      else
+        # Extract video/playlist ID from URL for name
+        local name=$(echo "$line" | grep -oP '(?<=list=)[^&]*|(?<=v=)[^&]*' | head -1)
+        [ -z "$name" ] && name="Playlist_$url_count"
+        echo "$name|$line" >> "$output_file"
+      fi
+      url_count=$((url_count + 1))
     elif [[ "$line" =~ :$ ]]; then
       # Playlist name (ends with :)
       current_name="${line%:}"
@@ -637,6 +647,18 @@ else
 fi
 
 # ───────────────────────────────────────────────────────
+#  CHECK IF OUTPUT ALREADY EXISTS
+# ───────────────────────────────────────────────────────
+check_output_exists() {
+  local OUT_NAME="$1"
+  local MAIN_FORMAT="${FORMATS[0]}"  # Check main format only (e.g., srt)
+  local OUT_FILE="$SRT_URL_DIR/${OUT_NAME}.${MAIN_FORMAT}"
+  
+  [ -f "$OUT_FILE" ] && return 0  # exists
+  return 1  # doesn't exist
+}
+
+# ───────────────────────────────────────────────────────
 #  TRANSCRIBE FUNCTION (faster-whisper)
 # ───────────────────────────────────────────────────────
 transcribe_audio() {
@@ -651,6 +673,12 @@ transcribe_audio() {
   debug "Format(s): ${FORMATS[*]}"
   debug "Language: $TRANSCRIBE_LANG"
   debug "Model: $MODEL"
+
+  # Check if output already exists - skip if it does
+  if check_output_exists "$OUT_NAME"; then
+    log "Skipped (already transcribed): $OUT_NAME"
+    return 0
+  fi
 
   # RAM check
   AVAILABLE_MB=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
