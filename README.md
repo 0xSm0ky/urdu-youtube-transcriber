@@ -15,6 +15,7 @@ A **professional-grade CLI tool** that downloads YouTube videos or playlists, tr
 - ✅ **Auto-detects `cookies.txt`** for YouTube authentication
 - ✅ **RAM check** before transcription to prevent crashes
 - ✅ **Auto-delete audio files** after transcription (saves disk space)
+- ✅ **Automatic cleanup** on interruption (Ctrl+C) — removes temp files safely
 - ✅ **Organized output** by URL (video/playlist ID)
 - ✅ **Auto-installs** all dependencies on first run
 - ✅ **Professional logging** with timestamps, log rotation (10MB), and verbose/debug mode
@@ -261,9 +262,24 @@ tail -f ./logs/urdu_transcribe.log
 ```
 
 ### Kill a job
+
+**Easy way (recommended):**
+```bash
+./urdu.sh --stop
+```
+This command automatically finds and stops all Urdu transcription processes with proper cleanup.
+
+**Manual way:**
 ```bash
 pkill -f "urdu.sh"
 ```
+
+**Force kill (if needed):**
+```bash
+pkill -9 -f "urdu.sh"
+```
+
+> **Note:** The script now has **automatic cleanup** - if interrupted (Ctrl+C), it will clean up temporary files and log the interruption.
 
 ### View completed log
 ```bash

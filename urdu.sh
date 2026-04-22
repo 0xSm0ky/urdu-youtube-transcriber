@@ -7,6 +7,55 @@
 #  Outputs:  Urdu SRT + English SRT + Arabic RTL SRT
 # ═══════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════
+#  SIGNAL HANDLING & CLEANUP
+# ═══════════════════════════════════════════════════════
+
+# Global variables for cleanup
+TEMP_FILES=()
+TEMP_DIRS=()
+
+cleanup() {
+  local exit_code=$?
+  echo -e "\n${YELLOW}[!] Received interrupt signal, cleaning up...${NC}" >&2
+  
+  # Clean up temporary files
+  for file in "${TEMP_FILES[@]}"; do
+    if [ -f "$file" ]; then
+      rm -f "$file"
+      debug "Cleaned up temp file: $file"
+    fi
+  done
+  
+  # Clean up temporary directories (only if empty)
+  for dir in "${TEMP_DIRS[@]}"; do
+    if [ -d "$dir" ] && [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+      rmdir "$dir" 2>/dev/null
+      debug "Cleaned up temp dir: $dir"
+    fi
+  done
+  
+  # Log interruption to log file if available
+  if [ -n "$LOG_FILE" ]; then
+    echo "$(_get_timestamp) [INTERRUPTED] Script interrupted and cleaned up" >> "$LOG_FILE"
+  fi
+  
+  exit $exit_code
+}
+
+# Set up signal handlers
+trap cleanup SIGINT SIGTERM SIGHUP
+
+# Function to register temp files for cleanup
+register_temp_file() {
+  TEMP_FILES+=("$1")
+}
+
+# Function to register temp directories for cleanup
+register_temp_dir() {
+  TEMP_DIRS+=("$1")
+}
+
 YELLOW='\033[1;33m'
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -124,6 +173,8 @@ OPTIONAL FLAGS:
   
   -L, --log <PATH>          Log file path (default: /tmp/urdu_transcribe.log)
   
+  -stop, --stop             Stop all running Urdu transcription processes
+  
   -h, --help                Show this help message
   
   -v, --verbose             Enable verbose output
@@ -146,6 +197,9 @@ EXAMPLES:
   
   # Monitor background job
   tail -f /tmp/urdu_transcribe.log
+  
+  # Stop all running Urdu processes
+  urdu.sh --stop
 
 EOF
   exit 0
@@ -167,6 +221,7 @@ COOKIES_PATH=""
 FOREGROUND=false
 LOG_FILE="./logs/urdu_transcribe.log"
 VERBOSE=false
+STOP_MODE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -214,6 +269,10 @@ while [[ $# -gt 0 ]]; do
       VERBOSE=true
       shift
       ;;
+    -stop|--stop)
+      STOP_MODE=true
+      shift
+      ;;
     -h|--help)
       usage
       ;;
@@ -224,6 +283,68 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ───────────────────────────────────────────────────────
+#  STOP MODE - KILL ALL URDU PROCESSES
+# ───────────────────────────────────────────────────────
+if [ "$STOP_MODE" = true ]; then
+  echo -e "${YELLOW}🔍 Finding Urdu processes...${NC}"
+
+  # Find all Urdu-related processes
+  URDU_PROCESSES=$(ps aux | grep -E "(urdu|transcr|whisper)" | grep -v grep | grep -v "urdu.sh.*-stop" | grep -v "urdu.sh.*--stop")
+
+  if [ -z "$URDU_PROCESSES" ]; then
+      echo -e "${GREEN}✅ No Urdu processes running${NC}"
+      exit 0
+  fi
+
+  echo -e "${RED}Found processes:${NC}"
+  echo "$URDU_PROCESSES" | while read -r line; do
+      PID=$(echo "$line" | awk '{print $2}')
+      CMD=$(echo "$line" | awk '{for(i=11;i<=NF;i++) printf "%s ", $i; print ""}')
+      echo -e "  PID: ${RED}$PID${NC} - $CMD"
+  done
+
+  echo ""
+  echo -e "${YELLOW}🛑 Stopping Urdu processes...${NC}"
+
+  # Kill processes gracefully first
+  echo "$URDU_PROCESSES" | while read -r line; do
+      PID=$(echo "$line" | awk '{print $2}')
+      if kill -TERM "$PID" 2>/dev/null; then
+          echo -e "  ${GREEN}✓${NC} Sent SIGTERM to PID $PID"
+      fi
+  done
+
+  # Wait a moment for graceful shutdown
+  sleep 2
+
+  # Check if any are still running and force kill if needed
+  STILL_RUNNING=$(ps aux | grep -E "(urdu|transcr|whisper)" | grep -v grep | grep -v "urdu.sh.*-stop" | grep -v "urdu.sh.*--stop")
+
+  if [ -n "$STILL_RUNNING" ]; then
+      echo -e "${YELLOW}⚠️  Some processes still running, force killing...${NC}"
+      echo "$STILL_RUNNING" | while read -r line; do
+          PID=$(echo "$line" | awk '{print $2}')
+          if kill -9 "$PID" 2>/dev/null; then
+              echo -e "  ${RED}☠️${NC} Force killed PID $PID"
+          fi
+      done
+  fi
+
+  # Final check
+  sleep 1
+  FINAL_CHECK=$(ps aux | grep -E "(urdu|transcr|whisper)" | grep -v grep | grep -v "urdu.sh.*-stop" | grep -v "urdu.sh.*--stop")
+
+  if [ -z "$FINAL_CHECK" ]; then
+      echo -e "${GREEN}✅ All Urdu processes stopped successfully${NC}"
+  else
+      echo -e "${RED}❌ Some processes may still be running${NC}"
+      exit 1
+  fi
+
+  exit 0
+fi
 
 # ───────────────────────────────────────────────────────
 #  QUEUE FUNCTIONALITY (DEFINED EARLY)
@@ -578,6 +699,9 @@ mkdir -p "$AUDIO_TEMP_DIR" || err "Failed to create $AUDIO_TEMP_DIR"
 mkdir -p "$AUDIO_URL_DIR" || err "Failed to create $AUDIO_URL_DIR"
 mkdir -p "$SRT_URL_DIR" || err "Failed to create $SRT_URL_DIR"
 
+# Register temp directory for cleanup
+register_temp_dir "$AUDIO_TEMP_DIR"
+
 log "Output structure created:"
 log "  � Audio (temp): $AUDIO_TEMP_DIR"
 log "  � Audio (done): $AUDIO_URL_DIR"
@@ -788,6 +912,7 @@ PYEOF
   if $TRANSLATE_AR; then
     local AR_FILE="$SRT_URL_DIR/${OUT_NAME}_ar.srt"
     local TEMP_EN_FILE="/tmp/${OUT_NAME}_temp_en_$RANDOM.srt"
+    register_temp_file "$TEMP_EN_FILE"
 
     CLEANUP_TEMP=true
     if $TRANSLATE_EN && [ -f "$SRT_URL_DIR/${OUT_NAME}_en.srt" ]; then
@@ -916,6 +1041,7 @@ if [ "$PLAYLIST_MODE" = true ]; then
     
     # Download to temp folder
     TEMP_AUDIO_FILE="$AUDIO_TEMP_DIR/${SAFE_TITLE}.mp3"
+    register_temp_file "$TEMP_AUDIO_FILE"
     debug "Downloading to: $TEMP_AUDIO_FILE"
 
     if download_audio "$VID_URL" "$TEMP_AUDIO_FILE" && [ -f "$TEMP_AUDIO_FILE" ]; then
@@ -943,6 +1069,7 @@ else
   
   # Download to temp folder
   TEMP_AUDIO_FILE="$AUDIO_TEMP_DIR/${TITLE}.mp3"
+  register_temp_file "$TEMP_AUDIO_FILE"
 
   if download_audio "$URL" "$TEMP_AUDIO_FILE" && [ -f "$TEMP_AUDIO_FILE" ]; then
     log "Downloaded: ${TITLE}.mp3 (temp)"
