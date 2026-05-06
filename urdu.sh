@@ -2,7 +2,7 @@
 
 # ═══════════════════════════════════════════════════════
 #  Urdu YouTube Transcriber + Translator
-#  faster-whisper (4x faster than openai-whisper on CPU)
+#  faster-whisper + Qwen3-ASR + yt-dlp + ArgosTranslate
 #  Supports: single video & playlists
 #  Outputs:  Urdu SRT + English SRT + Arabic RTL SRT
 # ═══════════════════════════════════════════════════════
@@ -18,28 +18,26 @@ TEMP_DIRS=()
 cleanup() {
   local exit_code=$?
   echo -e "\n${YELLOW}[!] Received interrupt signal, cleaning up...${NC}" >&2
-  
+
   # Clean up temporary files
   for file in "${TEMP_FILES[@]}"; do
     if [ -f "$file" ]; then
       rm -f "$file"
-      debug "Cleaned up temp file: $file"
     fi
   done
-  
+
   # Clean up temporary directories (only if empty)
   for dir in "${TEMP_DIRS[@]}"; do
     if [ -d "$dir" ] && [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
       rmdir "$dir" 2>/dev/null
-      debug "Cleaned up temp dir: $dir"
     fi
   done
-  
+
   # Log interruption to log file if available
   if [ -n "$LOG_FILE" ]; then
     echo "$(_get_timestamp) [INTERRUPTED] Script interrupted and cleaned up" >> "$LOG_FILE"
   fi
-  
+
   exit $exit_code
 }
 
@@ -66,7 +64,7 @@ GRAY='\033[0;37m'
 NC='\033[0m'
 
 # ═══════════════════════════════════════════════════════
-#  LOGGING & DEBUGGING FUNCTIONS
+#  TIMESTAMP FUNCTIONS
 # ═══════════════════════════════════════════════════════
 
 _get_timestamp() {
@@ -77,42 +75,25 @@ _get_timestamp_iso() {
   echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 }
 
-log()     { 
+log()     {
   echo -e "${GREEN}[✔]${NC} $1"
   [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [OK] $1" >> "$LOG_FILE"
 }
 
-warn()    { 
+warn()    {
   echo -e "${YELLOW}[!]${NC} $1" >&2
   [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [WARN] $1" >> "$LOG_FILE"
 }
 
-err()     { 
+err()     {
   echo -e "${RED}[✘]${NC} $1" >&2
   [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [ERROR] $1" >> "$LOG_FILE"
   exit 1
 }
 
-debug()   {
-  if [ "$VERBOSE" = true ]; then
-    echo -e "${BLUE}[DEBUG]${NC} $1" >&2
-    [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [DEBUG] $1" >> "$LOG_FILE"
-  fi
-}
-
-section() { 
+section() {
   echo -e "\n${CYAN}${BOLD}── $1 ──${NC}"
   [ -n "$LOG_FILE" ] && echo "" >> "$LOG_FILE" && echo "$(_get_timestamp) [SECTION] ── $1 ──" >> "$LOG_FILE"
-}
-
-info()    {
-  echo -e "${BLUE}[i]${NC} $1"
-  [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [INFO] $1" >> "$LOG_FILE"
-}
-
-success() {
-  echo -e "${GREEN}[✓]${NC} $1"
-  [ -n "$LOG_FILE" ] && echo "$(_get_timestamp) [SUCCESS] $1" >> "$LOG_FILE"
 }
 
 trace()   {
@@ -131,7 +112,7 @@ usage() {
 
   ╔═══════════════════════════════════════════════════════════════════╗
   ║          Urdu YouTube Transcriber 🎙️ CLI Tool                     ║
-  ║       faster-whisper + yt-dlp + ArgosTranslate                   ║
+  ║       faster-whisper + Qwen3-ASR + yt-dlp + ArgosTranslate        ║
   ╚═══════════════════════════════════════════════════════════════════╝
 
 USAGE:
@@ -146,58 +127,60 @@ QUEUE MODE (process multiple playlists):
                             File format:
                               Playlist Name:
                               https://youtube.com/playlist?list=...
-                              
+
                               Another Name:
                               https://youtube.com/playlist?list=...
 
 OPTIONAL FLAGS:
-  -m, --model <1-6>         Whisper model (default: 5)
+  -m, --model <1-8>         AI model (default: 5)
+                            Faster-Whisper models:
                             1=tiny, 2=base, 3=small, 4=medium
                             5=large-v3-turbo, 6=large-v3
-  
+                            Qwen3-ASR models (requires Docker):
+                            7=Qwen3-ASR-0.6B, 8=Qwen3-ASR-1.7B
+
   -l, --language <LANG>     Transcription language (default: Urdu)
                             Urdu, Arabic, English, French, Hindi, Turkish, Persian, etc.
-  
+
   -f, --format <1-4>        Output format (default: 1)
                             1=SRT, 2=TXT, 3=SRT+TXT, 4=VTT
-  
+
   -t, --translate <1-4>     Translation (default: 1)
                             1=No translation, 2=English only
                             3=Arabic only, 4=Both
-  
+
   -o, --output <PATH>       Output directory (default: ~/urdu_transcripts/data)
-  
+
   -c, --cookies <PATH>      Path to cookies.txt (auto-detects in script dir)
-  
+
   -F, --foreground          Run in foreground (default: background)
-  
+
   -L, --log <PATH>          Log file path (default: /tmp/urdu_transcribe.log)
-  
+
   -stop, --stop             Stop all running Urdu transcription processes
-  
+
   -h, --help                Show this help message
-  
-  -v, --verbose             Enable verbose output
+
 
 EXAMPLES:
   # Single video with default settings (runs in background)
   urdu.sh -u "https://www.youtube.com/watch?v=abc123"
-  
+
   # Playlist with English translation
   urdu.sh -u "https://www.youtube.com/playlist?list=xyz" -t 2
-  
+
   # Both languages, large model, foreground mode
   urdu.sh -u "https://youtu.be/abc123" -m 6 -t 4 -F
-  
+
   # Queue multiple playlists (runs sequentially in foreground)
   urdu.sh -q ./next-playlists.txt -m 5 -t 2
-  
+
   # Queue with large model
   urdu.sh --queue ./my-playlists.txt -m 6 -t 4
-  
+
   # Monitor background job
   tail -f /tmp/urdu_transcribe.log
-  
+
   # Stop all running Urdu processes
   urdu.sh --stop
 
@@ -220,8 +203,8 @@ CUSTOM_DIR=""
 COOKIES_PATH=""
 FOREGROUND=false
 LOG_FILE="./logs/urdu_transcribe.log"
-VERBOSE=false
 STOP_MODE=false
+MODEL_TYPE="faster-whisper"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -264,10 +247,6 @@ while [[ $# -gt 0 ]]; do
     -L|--log)
       LOG_FILE="$2"
       shift 2
-      ;;
-    -v|--verbose)
-      VERBOSE=true
-      shift
       ;;
     -stop|--stop)
       STOP_MODE=true
@@ -355,60 +334,60 @@ process_queue_file() {
   local lang="$3"
   local trans="$4"
   local format="$5"
-  
+
   [ ! -f "$queue_file" ] && err "Queue file not found: $queue_file"
-  
+
   local total=$(wc -l < "$queue_file")
   [ "$total" -eq 0 ] && err "Queue file is empty"
-  
+
   section "PROCESSING QUEUE ($queue_file)"
   echo -e "Total playlists: $total\n"
-  
+
   local idx=1
   local failed=0
-  
+
   while IFS='|' read -r name url; do
     # Skip empty lines
     [ -z "$url" ] && continue
-    
+
     echo -e "\n${YELLOW}[$idx/$total]${NC} ${BOLD}$name${NC}"
     echo "URL: $url"
-    
+
     if "$0" -u "$url" -m "$model" -l "$lang" -t "$trans" -f "$format" -F; then
       log "Completed: $name"
     else
       warn "Failed: $name"
       failed=$((failed + 1))
     fi
-    
+
     idx=$((idx + 1))
   done < "$queue_file"
-  
+
   echo -e "\n${GREEN}${BOLD}═══════════════════════════════════════════${NC}"
   echo -e "${GREEN}${BOLD}Queue Processing Complete${NC}"
   echo "  ✔ Succeeded: $((total - failed))/$total"
   [ "$failed" -gt 0 ] && echo "  ✘ Failed: $failed/$total"
   echo -e "${GREEN}${BOLD}═══════════════════════════════════════════${NC}\n"
-  
+
   exit 0
 }
 
 parse_playlist_file() {
   local input_file="$1"
   local output_file="$2"
-  
+
   [ ! -f "$input_file" ] && err "Playlist file not found: $input_file"
-  
+
   > "$output_file"  # Clear output file
   local current_name=""
   local url_count=1
-  
+
   while IFS= read -r line; do
     line="${line%%#*}"  # Strip comments
     # Trim whitespace from both ends
     line=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     [ -z "$line" ] && continue
-    
+
     if [[ "$line" =~ ^https?:// ]]; then
       # URL found - use name if provided, otherwise use URL as name
       if [ -n "$current_name" ]; then
@@ -426,10 +405,24 @@ parse_playlist_file() {
       current_name="${line%:}"
     fi
   done < "$input_file"
-  
+
   log "Queue created: $output_file"
   local count=$(wc -l < "$output_file" 2>/dev/null || echo 0)
   echo "  $count playlists ready"
+}
+
+# Function to check if Qwen3-ASR container is running
+check_qwen3_container() {
+  if ! docker ps | grep -q "qwen-asr"; then
+    warn "Qwen3-ASR container not running"
+    echo "Start it with:"
+    echo "docker run -d --name qwen-asr \\"
+    echo "  -p 8000:8000 \\"
+    echo "  public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:v0.9.0 \\"
+    echo "  --model $MODEL"
+    return 1
+  fi
+  return 0
 }
 
 # ───────────────────────────────────────────────────────
@@ -468,29 +461,13 @@ check_system_resources() {
   local total_disk=$(df / | awk 'NR==2 {print $2}')
   local available_disk=$(df / | awk 'NR==2 {print $4}')
   local cpu_cores=$(nproc 2>/dev/null || echo "unknown")
-  
-  debug "System Resources:"
-  debug "  Total RAM: $(numfmt --to=iec $total_ram 2>/dev/null || echo $((total_ram / 1024 / 1024))MB)"
-  debug "  Available RAM: $(numfmt --to=iec $available_ram 2>/dev/null || echo $((available_ram / 1024 / 1024))MB)"
-  debug "  Total Disk: $(numfmt --to=iec $total_disk 2>/dev/null || echo $((total_disk / 1024 / 1024))MB)"
-  debug "  Available Disk: $(numfmt --to=iec $available_disk 2>/dev/null || echo $((available_disk / 1024 / 1024))MB)"
-  debug "  CPU Cores: $cpu_cores"
-  
+
+
   # Warn if low disk space
   if [ "$available_disk" -lt 5242880 ]; then
     warn "Low disk space available (< 5GB). Transcription may fail."
   fi
 }
-
-log_environment() {
-  debug "Environment Information:"
-  debug "  Bash Version: ${BASH_VERSION}"
-  debug "  Working Directory: $(pwd)"
-  debug "  User: $(whoami)"
-  debug "  Hostname: $(hostname)"
-  debug "  Kernel: $(uname -r)"
-}
-
 log_script_start() {
   echo "" >> "$LOG_FILE"
   echo "═════════════════════════════════════════════════════════" >> "$LOG_FILE"
@@ -516,7 +493,6 @@ log_configuration() {
   echo "  Output Dir: $BASE_OUTPUT_DIR" >> "$LOG_FILE"
   echo "  Cookies: ${COOKIES_ARG:-none}" >> "$LOG_FILE"
   echo "  Log File: $LOG_FILE" >> "$LOG_FILE"
-  echo "  Verbose: $VERBOSE" >> "$LOG_FILE"
   echo "  Foreground: $FOREGROUND" >> "$LOG_FILE"
   echo "" >> "$LOG_FILE"
 }
@@ -528,7 +504,6 @@ rotate_logs() {
     if [ "$filesize" -gt 10485760 ]; then
       local rotated="${LOG_FILE}.$(date +%s)"
       mv "$LOG_FILE" "$rotated"
-      debug "Rotated old log to: $rotated"
       # Keep only last 5 rotated logs
       ls -t "${LOG_FILE}".* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null
     fi
@@ -587,7 +562,6 @@ log_script_start
 
 # Check system resources and log environment
 check_system_resources
-log_environment
 
 # ───────────────────────────────────────────────────────
 #  SANITIZE URL FOR FOLDER NAME (Windows + Linux safe)
@@ -648,13 +622,29 @@ TRANSCRIBE_LANG="${LANG_CODES[$LANG_KEY]:-$LANG_KEY}"
 
 # Model selection
 case "$MODEL_CHOICE" in
-  1) MODEL="tiny" ;;
-  2) MODEL="base" ;;
-  3) MODEL="small" ;;
-  4) MODEL="medium" ;;
-  6) MODEL="large-v3" ;;
-  *) MODEL="large-v3-turbo" ;;
+  1) MODEL="tiny"; MODEL_TYPE="faster-whisper" ;;
+  2) MODEL="base"; MODEL_TYPE="faster-whisper" ;;
+  3) MODEL="small"; MODEL_TYPE="faster-whisper" ;;
+  4) MODEL="medium"; MODEL_TYPE="faster-whisper" ;;
+  6) MODEL="large-v3"; MODEL_TYPE="faster-whisper" ;;
+  7) MODEL="Qwen/Qwen3-ASR-0.6B"; MODEL_TYPE="qwen3-asr" ;;
+  8) MODEL="Qwen/Qwen3-ASR-1.7B"; MODEL_TYPE="qwen3-asr" ;;
+  *) MODEL="large-v3-turbo"; MODEL_TYPE="faster-whisper" ;;
 esac
+
+# Check Qwen3-ASR requirements
+if [ "$MODEL_TYPE" = "qwen3-asr" ]; then
+  if ! command -v docker &>/dev/null; then
+    err "Docker is required for Qwen3-ASR models. Install Docker first."
+  fi
+  check_qwen3_container || err "Qwen3-ASR container not running. Start it with: docker run -d --name qwen-asr -p 8000:8000 public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:v0.9.0 --model $MODEL"
+  # Temporarily disabled due to transformers compatibility issues
+  warn "Qwen3-ASR models are temporarily disabled due to transformers library compatibility issues."
+  warn "The model requires a newer version of transformers that supports 'qwen3_asr' architecture."
+  warn "Using faster-whisper models instead. Qwen3-ASR support will be re-enabled when compatible."
+  MODEL_TYPE="whisper"
+  MODEL="openai/whisper-large-v3"
+fi
 
 # Format selection
 case "$FORMAT_CHOICE" in
@@ -687,7 +677,6 @@ log_configuration
 
 # Track start time for performance metrics
 SCRIPT_START_TIME=$(date +%s)
-debug "Script start timestamp: $SCRIPT_START_TIME"
 
 AUDIO_FOLDER="$BASE_OUTPUT_DIR/audio"
 SRT_FOLDER="$BASE_OUTPUT_DIR/srt"
@@ -756,18 +745,14 @@ BASE_YTDLP_ARGS="--js-runtimes node --remote-components ejs:github --extractor-a
 #  DETECT PLAYLIST vs SINGLE
 # ───────────────────────────────────────────────────────
 section "Fetching Video Info"
-debug "Analyzing URL: $URL"
 VIDEO_COUNT=$(yt-dlp --flat-playlist --get-id $BASE_YTDLP_ARGS "$URL" 2>/dev/null | wc -l)
-debug "Video count detected: $VIDEO_COUNT"
 
 if [ "$VIDEO_COUNT" -gt 1 ]; then
   echo -e "  ${CYAN}Playlist detected:${NC} $VIDEO_COUNT videos found."
   PLAYLIST_MODE=true
-  debug "Mode: Playlist"
 else
   echo -e "  ${CYAN}Single video detected.${NC}"
   PLAYLIST_MODE=false
-  debug "Mode: Single video"
 fi
 
 # ───────────────────────────────────────────────────────
@@ -777,7 +762,7 @@ check_output_exists() {
   local OUT_NAME="$1"
   local MAIN_FORMAT="${FORMATS[0]}"  # Check main format only (e.g., srt)
   local OUT_FILE="$SRT_URL_DIR/${OUT_NAME}.${MAIN_FORMAT}"
-  
+
   [ -f "$OUT_FILE" ] && return 0  # exists
   return 1  # doesn't exist
 }
@@ -792,11 +777,21 @@ transcribe_audio() {
   # Validate input file exists
   [ ! -f "$AUDIO_FILE" ] && err "Audio file not found: $AUDIO_FILE"
 
+  # Early file size check for large files - switch to smaller model if needed
+  FILE_SIZE_MB=$(stat -f%z "$AUDIO_FILE" 2>/dev/null || stat -c%s "$AUDIO_FILE" 2>/dev/null || echo 0)
+  FILE_SIZE_MB=$((FILE_SIZE_MB / 1024 / 1024))
+  if [ "$FILE_SIZE_MB" -gt 200 ] && [[ "$MODEL_CHOICE" -gt 3 ]]; then
+    warn "⚠️  Large file detected: ${FILE_SIZE_MB}MB audio file"
+    warn "   Large files work better with smaller models. Current model: $MODEL_CHOICE ($MODEL)"
+    read -rp "   Switch to model 3 (small) for better performance? [Y/n]: " SWITCH_MODEL
+    if [[ "$SWITCH_MODEL" != "n" && "$SWITCH_MODEL" != "N" ]]; then
+      MODEL_CHOICE=3
+      MODEL="small"
+      log "Switched to model 3 (small) for large file processing"
+    fi
+  fi
+
   trace "Starting transcription of: $AUDIO_FILE"
-  debug "Output name: $OUT_NAME"
-  debug "Format(s): ${FORMATS[*]}"
-  debug "Language: $TRANSCRIBE_LANG"
-  debug "Model: $MODEL"
 
   # Check if output already exists - skip if it does
   if check_output_exists "$OUT_NAME"; then
@@ -804,32 +799,34 @@ transcribe_audio() {
     return 0
   fi
 
-  # RAM check
+  # RAM check with buffer for processing overhead
   AVAILABLE_MB=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
-  declare -A MODEL_RAM=([tiny]=400 [base]=600 [small]=1200 [medium]=3000 [large-v3-turbo]=3500 [large-v3]=5000)
+  declare -A MODEL_RAM=([tiny]=400 [base]=600 [small]=1200 [medium]=3000 [large-v3-turbo]=3500 [large-v3]=5000 ["Qwen/Qwen3-ASR-0.6B"]=2000 ["Qwen/Qwen3-ASR-1.7B"]=4700])
   REQUIRED_MB=${MODEL_RAM[$MODEL]:-3000}
-  debug "RAM Check: Available=${AVAILABLE_MB}MB, Required=${REQUIRED_MB}MB"
+  # Add 20% buffer for processing overhead
+  REQUIRED_MB=$((REQUIRED_MB * 120 / 100))
+  
   if [ "$AVAILABLE_MB" -lt "$REQUIRED_MB" ]; then
-    warn "⚠️  Low RAM: ${AVAILABLE_MB}MB available, $MODEL needs ~${REQUIRED_MB}MB"
+    warn "⚠️  Low RAM: ${AVAILABLE_MB}MB available, $MODEL needs ~${REQUIRED_MB}MB (with buffer)"
     read -rp "   Continue anyway? [y/N]: " RAMCONTINUE
-    [[ "$RAMCONTINUE" != "y" && "$RAMCONTINUE" != "Y" ]] && err "Aborted. Re-run and pick a smaller model."
+    [[ "$RAMCONTINUE" != "y" && "$RAMCONTINUE" != "Y" ]] && err "Aborted. Try a smaller model or more RAM."
   else
-    log "RAM OK: ${AVAILABLE_MB}MB available (need ~${REQUIRED_MB}MB)"
+    log "RAM OK: ${AVAILABLE_MB}MB available (need ~${REQUIRED_MB}MB with buffer)"
   fi
 
   for FMT in "${FORMATS[@]}"; do
     local EXT="$FMT"
     local OUT_FILE="$SRT_URL_DIR/${OUT_NAME}.${EXT}"
-    
-    debug "Transcribing to format: $FMT → $OUT_FILE"
 
-    # faster-whisper via python — uses int8 quantization for max CPU speed
-    python3 << PYEOF || err "Transcription failed"
+
+    if [ "$MODEL_TYPE" = "faster-whisper" ]; then
+      # faster-whisper via python — uses int8 quantization for max CPU speed
+      python3 << PYEOF || err "Transcription failed"
 from faster_whisper import WhisperModel
 import sys
 
 try:
-    model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
+    model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=1)
     segments, info = model.transcribe(
         "$AUDIO_FILE",
         language="${TRANSCRIBE_LANG}",
@@ -870,14 +867,99 @@ except Exception as e:
     sys.exit(1)
 PYEOF
 
+    elif [ "$MODEL_TYPE" = "qwen3-asr" ]; then
+      # Qwen3-ASR via Docker container
+      check_qwen3_container || err "Qwen3-ASR container not running. Start it with: docker run -d --name qwen-asr -p 8000:8000 public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:v0.9.0 --model $MODEL"
+
+      python3 << PYEOF || err "Qwen3-ASR transcription failed"
+import requests
+import json
+import sys
+import os
+
+def fmt_time(seconds):
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours:02}:{minutes:02}:{secs:06.3f}".replace('.', ',')
+
+try:
+    # Check if audio file exists
+    if not os.path.exists("$AUDIO_FILE"):
+        print(f"ERROR: Audio file not found: $AUDIO_FILE", file=sys.stderr)
+        sys.exit(1)
+
+    # Send audio to Qwen3-ASR container
+    url = "http://localhost:8000/v1/audio/transcriptions"
+    with open("$AUDIO_FILE", "rb") as f:
+        files = {"file": ("audio.mp3", f, "audio/mpeg")}
+        data = {
+            "model": "$MODEL",
+            "language": "${TRANSCRIBE_LANG}",
+            "response_format": "verbose_json",
+            "temperature": 0,
+            "timestamp_granularities": ["segment"]
+        }
+        response = requests.post(url, files=files, data=data, timeout=300)
+
+    if response.status_code != 200:
+        print(f"ERROR: Qwen3-ASR API error {response.status_code}: {response.text}", file=sys.stderr)
+        sys.exit(1)
+
+    result = response.json()
+
+    if "segments" not in result:
+        print(f"ERROR: No segments in Qwen3-ASR response", file=sys.stderr)
+        sys.exit(1)
+
+    segments = result["segments"]
+    if not segments:
+        print(f"Warning: No speech detected in audio", file=sys.stderr)
+        sys.exit(0)
+
+    # Write output in requested format
+    if "$FMT" == "srt":
+        with open("$OUT_FILE", "w", encoding="utf-8") as f:
+            for i, seg in enumerate(segments, 1):
+                start_time = fmt_time(seg["start"])
+                end_time = fmt_time(seg["end"])
+                text = seg["text"].strip()
+                f.write(f"{i}\n{start_time} --> {end_time}\n{text}\n\n")
+    elif "$FMT" == "txt":
+        with open("$OUT_FILE", "w", encoding="utf-8") as f:
+            for seg in segments:
+                f.write(seg["text"].strip() + "\n")
+    elif "$FMT" == "vtt":
+        with open("$OUT_FILE", "w", encoding="utf-8") as f:
+            f.write("WEBVTT\n\n")
+            for seg in segments:
+                start_time = fmt_time(seg["start"]).replace(',', '.')
+                end_time = fmt_time(seg["end"]).replace(',', '.')
+                text = seg["text"].strip()
+                f.write(f"{start_time} --> {end_time}\n{text}\n\n")
+
+    print(f"✓ Transcription saved: $OUT_FILE")
+
+except Exception as e:
+    print(f"ERROR: {str(e)}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+
+    else
+      err "Unknown model type: $MODEL_TYPE"
+    fi
+
     [ -f "$OUT_FILE" ] && log "Saved: $OUT_FILE"
   done
 
   # ── English translation (Whisper built-in) ──
   if $TRANSLATE_EN; then
-    local EN_FILE="$SRT_URL_DIR/${OUT_NAME}_en.srt"
+    if [ "$MODEL_TYPE" = "qwen3-asr" ]; then
+      warn "English translation not available for Qwen3-ASR models. Use faster-whisper models (1-6) for translation."
+    else
+      local EN_FILE="$SRT_URL_DIR/${OUT_NAME}_en.srt"
 
-    python3 << PYEOF || warn "English translation failed"
+      python3 << PYEOF || warn "English translation failed"
 from faster_whisper import WhisperModel
 
 try:
@@ -907,19 +989,23 @@ except Exception as e:
 PYEOF
     [ -f "$EN_FILE" ] && log "Saved (EN): $EN_FILE"
   fi
+fi
 
   # ── Arabic translation (RTL) ──
   if $TRANSLATE_AR; then
-    local AR_FILE="$SRT_URL_DIR/${OUT_NAME}_ar.srt"
-    local TEMP_EN_FILE="/tmp/${OUT_NAME}_temp_en_$RANDOM.srt"
-    register_temp_file "$TEMP_EN_FILE"
-
-    CLEANUP_TEMP=true
-    if $TRANSLATE_EN && [ -f "$SRT_URL_DIR/${OUT_NAME}_en.srt" ]; then
-      TEMP_EN_FILE="$SRT_URL_DIR/${OUT_NAME}_en.srt"
-      CLEANUP_TEMP=false
+    if [ "$MODEL_TYPE" = "qwen3-asr" ]; then
+      warn "Arabic translation not available for Qwen3-ASR models. Use faster-whisper models (1-6) for translation."
     else
-      python3 << PYEOF || { warn "Failed to generate English for Arabic translation"; return; }
+      local AR_FILE="$SRT_URL_DIR/${OUT_NAME}_ar.srt"
+      local TEMP_EN_FILE="/tmp/${OUT_NAME}_temp_en_$RANDOM.srt"
+      register_temp_file "$TEMP_EN_FILE"
+
+      CLEANUP_TEMP=true
+      if $TRANSLATE_EN && [ -f "$SRT_URL_DIR/${OUT_NAME}_en.srt" ]; then
+        TEMP_EN_FILE="$SRT_URL_DIR/${OUT_NAME}_en.srt"
+        CLEANUP_TEMP=false
+      else
+        python3 << PYEOF || { warn "Failed to generate English for Arabic translation"; return; }
 from faster_whisper import WhisperModel
 
 try:
@@ -954,10 +1040,10 @@ try:
     langs = argostranslate.translate.get_installed_languages()
     en_lang = next((l for l in langs if l.code == 'en'), None)
     ar_lang = next((l for l in langs if l.code == 'ar'), None)
-    
+
     if not en_lang or not ar_lang:
         raise Exception("Arabic language pack not installed")
-    
+
     translator = en_lang.get_translation(ar_lang)
 
     RTL_START = '\u202B'
@@ -994,6 +1080,7 @@ PYEOF
       rm -f "$TEMP_EN_FILE"
     fi
   fi
+fi
 }
 
 # ───────────────────────────────────────────────────────
@@ -1019,36 +1106,31 @@ SUCCESS=0
 if [ "$PLAYLIST_MODE" = true ]; then
   mapfile -t VIDEO_IDS < <(yt-dlp --flat-playlist --get-id $BASE_YTDLP_ARGS "$URL" 2>/dev/null)
   TOTAL=${#VIDEO_IDS[@]}
-  debug "Total videos in playlist: $TOTAL"
   echo -e "  Processing ${BOLD}$TOTAL videos${NC}...\n"
 
   for i in "${!VIDEO_IDS[@]}"; do
     VID_ID="${VIDEO_IDS[$i]}"
     VID_URL="https://www.youtube.com/watch?v=$VID_ID"
     IDX=$((i + 1))
-    
-    debug "Processing video $IDX/$TOTAL: $VID_ID"
+
 
     echo -e "\n${CYAN}  [$IDX/$TOTAL]${NC} https://youtu.be/$VID_ID"
 
     TITLE=$(yt-dlp --get-title $BASE_YTDLP_ARGS "$VID_URL" 2>/dev/null \
       | tr ' ' '_' | tr -cd '[:alnum:]_-' | cut -c1-60)
     TITLE="${TITLE:-video_${IDX}}"
-    debug "Video title: $TITLE"
 
     SAFE_TITLE="${IDX}_${TITLE}"
-    debug "Safe title: $SAFE_TITLE"
-    
+
     # Download to temp folder
     TEMP_AUDIO_FILE="$AUDIO_TEMP_DIR/${SAFE_TITLE}.mp3"
     register_temp_file "$TEMP_AUDIO_FILE"
-    debug "Downloading to: $TEMP_AUDIO_FILE"
 
     if download_audio "$VID_URL" "$TEMP_AUDIO_FILE" && [ -f "$TEMP_AUDIO_FILE" ]; then
       log "Downloaded: $SAFE_TITLE.mp3 (temp)"
       warn "Transcribing... ($IDX/$TOTAL)"
       transcribe_audio "$TEMP_AUDIO_FILE" "$SAFE_TITLE"
-      
+
       # Delete audio file after successful transcription
       if [ -f "$TEMP_AUDIO_FILE" ]; then
         rm -f "$TEMP_AUDIO_FILE"
@@ -1066,7 +1148,7 @@ else
   TITLE=$(yt-dlp --get-title $BASE_YTDLP_ARGS "$URL" 2>/dev/null \
     | tr ' ' '_' | tr -cd '[:alnum:]_-' | cut -c1-60)
   TITLE="${TITLE:-urdu_transcript}"
-  
+
   # Download to temp folder
   TEMP_AUDIO_FILE="$AUDIO_TEMP_DIR/${TITLE}.mp3"
   register_temp_file "$TEMP_AUDIO_FILE"
@@ -1075,7 +1157,7 @@ else
     log "Downloaded: ${TITLE}.mp3 (temp)"
     warn "Transcribing..."
     transcribe_audio "$TEMP_AUDIO_FILE" "$TITLE"
-    
+
     # Delete audio file after successful transcription
     if [ -f "$TEMP_AUDIO_FILE" ]; then
       rm -f "$TEMP_AUDIO_FILE"
@@ -1097,7 +1179,7 @@ log_performance_summary() {
   local hours=$((elapsed / 3600))
   local minutes=$(((elapsed % 3600) / 60))
   local seconds=$((elapsed % 60))
-  
+
   echo "" >> "$LOG_FILE"
   echo "═════════════════════════════════════════════════════════" >> "$LOG_FILE"
   echo "Session Summary:" >> "$LOG_FILE"
@@ -1107,10 +1189,7 @@ log_performance_summary() {
   echo "Elapsed Time:  ${hours}h ${minutes}m ${seconds}s" >> "$LOG_FILE"
   echo "Total Seconds: $elapsed" >> "$LOG_FILE"
   echo "" >> "$LOG_FILE"
-  
-  debug "Performance Summary:"
-  debug "  Total Time: ${hours}h ${minutes}m ${seconds}s"
-  debug "  Output Directory: $BASE_OUTPUT_DIR"
+
 }
 
 log_performance_summary

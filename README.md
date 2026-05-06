@@ -1,6 +1,6 @@
 # 🎙️ Urdu YouTube Transcriber + Translator
 
-A **professional-grade CLI tool** that downloads YouTube videos or playlists, transcribes audio using **faster-whisper**, and optionally translates to **English** or **Arabic (RTL)**. Fully local — no API keys, no cloud services.
+A **professional-grade CLI tool** that downloads YouTube videos or playlists, transcribes audio using **faster-whisper or Qwen3-ASR models**, and optionally translates to **English** or **Arabic (RTL)**. Fully local — no API keys, no cloud services.
 
 ---
 
@@ -8,7 +8,7 @@ A **professional-grade CLI tool** that downloads YouTube videos or playlists, tr
 
 - ✅ **Single video or full playlist** support
 - ✅ **Queue mode** — process multiple playlists from a single file sequentially
-- ✅ **Automatic transcription** using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (4× faster than openai-whisper on CPU)
+- ✅ **Automatic transcription** using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (4× faster than openai-whisper on CPU) or [Qwen3-ASR](https://github.com/QwenLM/Qwen3) models
 - ✅ **Translation** to English (Whisper built-in) and/or Arabic with RTL formatting
 - ✅ **CLI-style interface** with flags (like SQLMap) — no interactive prompts
 - ✅ **Runs in background by default** with automatic logging via `nohup`
@@ -103,7 +103,7 @@ The script auto-detects and uses it.
 
 | Flag | Long | Argument | Default | Description |
 |------|------|----------|---------|-------------|
-| `-m` | `--model` | 1-6 | 5 | Whisper model (see table below) |
+| `-m` | `--model` | 1-8 | 5 | AI model (see table below) |
 | `-l` | `--language` | Name | Urdu | Transcription language |
 | `-f` | `--format` | 1-4 | 1 | Output format (1=SRT, 2=TXT, 3=SRT+TXT, 4=VTT) |
 | `-t` | `--translate` | 1-4 | 1 | Translation (1=none, 2=EN, 3=AR, 4=both) |
@@ -322,7 +322,7 @@ Files are organized by URL with separate audio and srt folders. **Audio files ar
 
 ---
 
-## 🤖 Whisper Models
+## 🤖 AI Models
 
 Choose based on your **RAM availability** and **speed vs accuracy** preference.
 
@@ -334,8 +334,19 @@ Choose based on your **RAM availability** and **speed vs accuracy** preference.
 | 4 | medium | 1.5GB | ⚡ | Very good | ~3GB | Long videos |
 | 5 | large-v3-turbo | 1.6GB | ⚡⚡ | High | ~3.5GB | **Recommended** |
 | 6 | large-v3 | 3GB | 🐢 | Best | ~5GB | Critical accuracy |
+| 7 | Qwen3-ASR-0.6B | ~1.2GB | ⚡⚡⚡ | High | ~2GB | **Docker required** |
+| 8 | Qwen3-ASR-1.7B | ~3.4GB | ⚡⚡ | Very high | ~4.7GB | **Docker required** |
 
-Models auto-download on first use and cache at `~/.cache/huggingface/`.
+**Qwen3-ASR Models** require Docker and run via container. They may be faster on CPU than Whisper models. **Translation not available** — use models 1-6 for English/Arabic translation.
+
+For Qwen3 models, start the Docker container first:
+```bash
+docker run -d --name qwen-asr \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  -p 8000:8000 \
+  public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:v0.9.0 \
+  --model Qwen/Qwen3-ASR-0.6B
+```
 
 > **Note:** All models run with `int8` quantization and `cpu_threads=2` for best CPU performance. This is automatically configured — no extra flags needed.
 
