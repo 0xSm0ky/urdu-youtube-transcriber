@@ -171,7 +171,7 @@ OPTIONAL FLAGS:
   
   -F, --foreground          Run in foreground (default: background)
   
-  -L, --log <PATH>          Log file path (default: /tmp/urdu_transcribe.log)
+  -L, --log <PATH>          Log file path (default: ./logs/urdu_transcribe.log)
   
   -stop, --stop             Stop all running Urdu transcription processes
   
@@ -196,7 +196,7 @@ EXAMPLES:
   urdu.sh --queue ./my-playlists.txt -m 6 -t 4
   
   # Monitor background job
-  tail -f /tmp/urdu_transcribe.log
+  tail -f ./logs/urdu_transcribe.log
   
   # Stop all running Urdu processes
   urdu.sh --stop
@@ -403,10 +403,12 @@ parse_playlist_file() {
   local current_name=""
   local url_count=1
   
-  while IFS= read -r line; do
+  # `|| [ -n "$line" ]` catches the last line when the file has no trailing newline.
+  while IFS= read -r line || [ -n "$line" ]; do
     line="${line%%#*}"  # Strip comments
-    # Trim whitespace from both ends
-    line=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    # Trim whitespace from both ends (bash builtins, no fork)
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
     [ -z "$line" ] && continue
     
     if [[ "$line" =~ ^https?:// ]]; then
@@ -435,18 +437,32 @@ parse_playlist_file() {
 # ───────────────────────────────────────────────────────
 #  HANDLE QUEUE MODE
 # ───────────────────────────────────────────────────────
+# Build a respawn command shared by queue + single-URL background paths.
+# Only emit -o / -c when the values are non-empty so the child sees clean defaults.
+build_respawn_args() {
+  RESPAWN_ARGS=(-m "$MODEL_CHOICE" -l "$LANG_INPUT" -f "$FORMAT_CHOICE" -t "$TRANS_CHOICE" -L "$LOG_FILE" -F)
+  [ -n "$CUSTOM_DIR" ]   && RESPAWN_ARGS+=(-o "$CUSTOM_DIR")
+  [ -n "$COOKIES_PATH" ] && RESPAWN_ARGS+=(-c "$COOKIES_PATH")
+  [ "$VERBOSE" = true ]  && RESPAWN_ARGS+=(-v)
+}
+
+announce_background() {
+  local pid="$1" label="${2:-Job}"
+  sleep 0.2
+  echo -e "${GREEN}[✔] ${label} started in background${NC}"
+  echo -e "${GREEN}    PID: $pid${NC}"
+  echo -e "${GREEN}    Log: $LOG_FILE${NC}"
+  echo -e "${GREEN}${BOLD}Monitor with: tail -f $LOG_FILE${NC}"
+}
+
 if [ -n "$QUEUE_FILE" ]; then
   mkdir -p ./logs
   TEMP_QUEUE="./logs/.queue_temp_$$"
   parse_playlist_file "$QUEUE_FILE" "$TEMP_QUEUE"
   if [ "$FOREGROUND" = false ] && [ -t 1 ]; then
-    nohup "$0" -q "$QUEUE_FILE" -m "$MODEL_CHOICE" -l "$LANG_INPUT" -f "$FORMAT_CHOICE"            -t "$TRANS_CHOICE" -o "$CUSTOM_DIR" -c "$COOKIES_PATH" -L "$LOG_FILE" -F > "$LOG_FILE" 2>&1 &
-    BG_PID=$!
-    sleep 0.2
-    echo -e "[0;32m[✔] Queue started in background[0m"
-    echo -e "[0;32m    PID: $BG_PID[0m"
-    echo -e "[0;32m    Log: $LOG_FILE[0m"
-    echo -e "[0;32m[1mMonitor with: tail -f $LOG_FILE[0m"
+    build_respawn_args
+    nohup "$0" -q "$QUEUE_FILE" "${RESPAWN_ARGS[@]}" > "$LOG_FILE" 2>&1 &
+    announce_background "$!" "Queue"
     rm -f "$TEMP_QUEUE"
     exit 0
   fi
@@ -539,22 +555,10 @@ rotate_logs() {
 #  RUN IN BACKGROUND BY DEFAULT (unless -F flag set)
 # ───────────────────────────────────────────────────────
 if [ "$FOREGROUND" = false ] && [ -t 1 ]; then
-  # Not in foreground and connected to terminal, run in background
-  if [ -n "$QUEUE_FILE" ]; then
-    # Queue mode
-    nohup "$0" -q "$QUEUE_FILE" -m "$MODEL_CHOICE" -l "$LANG_INPUT" -f "$FORMAT_CHOICE" \
-           -t "$TRANS_CHOICE" -o "$CUSTOM_DIR" -c "$COOKIES_PATH" -L "$LOG_FILE" -F > "$LOG_FILE" 2>&1 &
-  else
-    # Single URL mode
-    nohup "$0" -u "$URL" -m "$MODEL_CHOICE" -l "$LANG_INPUT" -f "$FORMAT_CHOICE" \
-           -t "$TRANS_CHOICE" -o "$CUSTOM_DIR" -c "$COOKIES_PATH" -L "$LOG_FILE" -F > "$LOG_FILE" 2>&1 &
-  fi
-  BG_PID=$!
-  sleep 0.2
-  echo -e "${GREEN}[✔] Job started in background${NC}"
-  echo -e "${GREEN}    PID: $BG_PID${NC}"
-  echo -e "${GREEN}    Log: $LOG_FILE${NC}"
-  echo -e "${GREEN}${BOLD}Monitor with: tail -f $LOG_FILE${NC}"
+  # Queue mode already handled above; only single-URL respawn reaches here.
+  build_respawn_args
+  nohup "$0" -u "$URL" "${RESPAWN_ARGS[@]}" > "$LOG_FILE" 2>&1 &
+  announce_background "$!" "Job"
   exit 0
 fi
 
@@ -618,17 +622,19 @@ log "URL Folder Name: $URL_FOLDER_NAME"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTO_COOKIES="$SCRIPT_DIR/cookies.txt"
+COOKIES_FILE=""
 COOKIES_ARG=""
 
 if [ -n "$COOKIES_PATH" ] && [ -f "$COOKIES_PATH" ]; then
-  COOKIES_ARG="--cookies $COOKIES_PATH"
+  COOKIES_FILE="$COOKIES_PATH"
   log "Cookies loaded: $COOKIES_PATH"
 elif [ -f "$AUTO_COOKIES" ]; then
-  COOKIES_ARG="--cookies $AUTO_COOKIES"
+  COOKIES_FILE="$AUTO_COOKIES"
   log "cookies.txt found — using automatically ✅"
 else
   warn "No cookies.txt found (will try without authentication)"
 fi
+[ -n "$COOKIES_FILE" ] && COOKIES_ARG="--cookies $COOKIES_FILE"  # display-only string for logging
 
 # ───────────────────────────────────────────────────────
 #  PROCESS OPTIONS
@@ -703,8 +709,8 @@ mkdir -p "$SRT_URL_DIR" || err "Failed to create $SRT_URL_DIR"
 register_temp_dir "$AUDIO_TEMP_DIR"
 
 log "Output structure created:"
-log "  � Audio (temp): $AUDIO_TEMP_DIR"
-log "  � Audio (done): $AUDIO_URL_DIR"
+log "  📁 Audio (temp): $AUDIO_TEMP_DIR"
+log "  📁 Audio (done): $AUDIO_URL_DIR"
 log "  📁 Subtitles  : $SRT_URL_DIR"
 
 # ───────────────────────────────────────────────────────
@@ -750,14 +756,25 @@ fi
 # ───────────────────────────────────────────────────────
 #  yt-dlp ARGS — node + EJS solver for n-challenge
 # ───────────────────────────────────────────────────────
-BASE_YTDLP_ARGS="--js-runtimes node --remote-components ejs:github --extractor-args youtube:player_client=web $COOKIES_ARG"
+BASE_YTDLP_ARGS=(
+  --js-runtimes node
+  --remote-components ejs:github
+  --extractor-args youtube:player_client=web
+)
+[ -n "$COOKIES_FILE" ] && BASE_YTDLP_ARGS+=(--cookies "$COOKIES_FILE")
+
+# Helper: fetch and sanitize a yt-dlp title for safe filesystem use
+get_video_title() {
+  yt-dlp --get-title "${BASE_YTDLP_ARGS[@]}" "$1" 2>/dev/null \
+    | tr ' ' '_' | tr -cd '[:alnum:]_-' | cut -c1-60
+}
 
 # ───────────────────────────────────────────────────────
 #  DETECT PLAYLIST vs SINGLE
 # ───────────────────────────────────────────────────────
 section "Fetching Video Info"
 debug "Analyzing URL: $URL"
-VIDEO_COUNT=$(yt-dlp --flat-playlist --get-id $BASE_YTDLP_ARGS "$URL" 2>/dev/null | wc -l)
+VIDEO_COUNT=$(yt-dlp --flat-playlist --get-id "${BASE_YTDLP_ARGS[@]}" "$URL" 2>/dev/null | wc -l)
 debug "Video count detected: $VIDEO_COUNT"
 
 if [ "$VIDEO_COUNT" -gt 1 ]; then
@@ -811,8 +828,15 @@ transcribe_audio() {
   debug "RAM Check: Available=${AVAILABLE_MB}MB, Required=${REQUIRED_MB}MB"
   if [ "$AVAILABLE_MB" -lt "$REQUIRED_MB" ]; then
     warn "⚠️  Low RAM: ${AVAILABLE_MB}MB available, $MODEL needs ~${REQUIRED_MB}MB"
-    read -rp "   Continue anyway? [y/N]: " RAMCONTINUE
-    [[ "$RAMCONTINUE" != "y" && "$RAMCONTINUE" != "Y" ]] && err "Aborted. Re-run and pick a smaller model."
+    if [ "${URDU_FORCE_LOW_RAM:-0}" = "1" ]; then
+      warn "URDU_FORCE_LOW_RAM=1 set — proceeding anyway."
+    elif [ -t 0 ]; then
+      RAMCONTINUE=""
+      read -t 30 -rp "   Continue anyway? [y/N]: " RAMCONTINUE || true
+      [[ "$RAMCONTINUE" != "y" && "$RAMCONTINUE" != "Y" ]] && err "Aborted. Re-run and pick a smaller model."
+    else
+      err "Non-interactive mode: aborting due to low RAM. Re-run with a smaller model (-m 1/2/3) or set URDU_FORCE_LOW_RAM=1."
+    fi
   else
     log "RAM OK: ${AVAILABLE_MB}MB available (need ~${REQUIRED_MB}MB)"
   fi
@@ -823,16 +847,25 @@ transcribe_audio() {
     
     debug "Transcribing to format: $FMT → $OUT_FILE"
 
-    # faster-whisper via python — uses int8 quantization for max CPU speed
-    python3 << PYEOF || err "Transcription failed"
+    # faster-whisper via python — uses int8 quantization for max CPU speed.
+    # Variables passed via env to avoid quoting/escaping issues with file paths.
+    MODEL="$MODEL" AUDIO_FILE="$AUDIO_FILE" OUT_FILE="$OUT_FILE" \
+    FMT="$FMT" TRANSCRIBE_LANG="$TRANSCRIBE_LANG" \
+    python3 << 'PYEOF' || err "Transcription failed"
+import os, sys
 from faster_whisper import WhisperModel
-import sys
+
+MODEL = os.environ["MODEL"]
+AUDIO_FILE = os.environ["AUDIO_FILE"]
+OUT_FILE = os.environ["OUT_FILE"]
+FMT = os.environ["FMT"]
+TRANSCRIBE_LANG = os.environ["TRANSCRIBE_LANG"]
 
 try:
-    model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
+    model = WhisperModel(MODEL, device="cpu", compute_type="int8", cpu_threads=2)
     segments, info = model.transcribe(
-        "$AUDIO_FILE",
-        language="${TRANSCRIBE_LANG}",
+        AUDIO_FILE,
+        language=TRANSCRIBE_LANG,
         beam_size=5,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500)
@@ -846,27 +879,27 @@ try:
 
     segments = list(segments)
     if not segments:
-        print(f"Warning: No speech detected in audio", file=sys.stderr)
+        print("Warning: No speech detected in audio", file=sys.stderr)
         sys.exit(0)
 
-    if "$FMT" == "srt":
-        with open("$OUT_FILE", "w", encoding="utf-8") as f:
+    if FMT == "srt":
+        with open(OUT_FILE, "w", encoding="utf-8") as f:
             for i, seg in enumerate(segments, 1):
                 f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
-    elif "$FMT" == "txt":
-        with open("$OUT_FILE", "w", encoding="utf-8") as f:
+    elif FMT == "txt":
+        with open(OUT_FILE, "w", encoding="utf-8") as f:
             for seg in segments:
                 f.write(seg.text.strip() + "\n")
-    elif "$FMT" == "vtt":
-        with open("$OUT_FILE", "w", encoding="utf-8") as f:
+    elif FMT == "vtt":
+        with open(OUT_FILE, "w", encoding="utf-8") as f:
             f.write("WEBVTT\n\n")
             for seg in segments:
                 f.write(f"{fmt_time(seg.start).replace(',','.')} --> {fmt_time(seg.end).replace(',','.')}\n{seg.text.strip()}\n\n")
 
-    print(f"✓ Transcription saved: $OUT_FILE")
+    print(f"✓ Transcription saved: {OUT_FILE}")
 
 except Exception as e:
-    print(f"ERROR: {str(e)}", file=sys.stderr)
+    print(f"ERROR: {e}", file=sys.stderr)
     sys.exit(1)
 PYEOF
 
@@ -877,14 +910,22 @@ PYEOF
   if $TRANSLATE_EN; then
     local EN_FILE="$SRT_URL_DIR/${OUT_NAME}_en.srt"
 
-    python3 << PYEOF || warn "English translation failed"
+    MODEL="$MODEL" AUDIO_FILE="$AUDIO_FILE" OUT_FILE="$EN_FILE" \
+    TRANSCRIBE_LANG="$TRANSCRIBE_LANG" \
+    python3 << 'PYEOF' || warn "English translation failed"
+import os, sys
 from faster_whisper import WhisperModel
 
+MODEL = os.environ["MODEL"]
+AUDIO_FILE = os.environ["AUDIO_FILE"]
+OUT_FILE = os.environ["OUT_FILE"]
+TRANSCRIBE_LANG = os.environ["TRANSCRIBE_LANG"]
+
 try:
-    model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
+    model = WhisperModel(MODEL, device="cpu", compute_type="int8", cpu_threads=2)
     segments, _ = model.transcribe(
-        "$AUDIO_FILE",
-        language="${TRANSCRIBE_LANG}",
+        AUDIO_FILE,
+        language=TRANSCRIBE_LANG,
         task="translate",
         beam_size=5,
         vad_filter=True,
@@ -897,13 +938,13 @@ try:
         sec = s % 60
         return f"{h:02}:{m:02}:{sec:06.3f}".replace('.', ',')
 
-    with open("$EN_FILE", "w", encoding="utf-8") as f:
+    with open(OUT_FILE, "w", encoding="utf-8") as f:
         for i, seg in enumerate(list(segments), 1):
             f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
 
-    print(f"✓ English translation saved: $EN_FILE")
+    print(f"✓ English translation saved: {OUT_FILE}")
 except Exception as e:
-    print(f"ERROR: {str(e)}", file=sys.stderr)
+    print(f"ERROR: {e}", file=sys.stderr)
 PYEOF
     [ -f "$EN_FILE" ] && log "Saved (EN): $EN_FILE"
   fi
@@ -919,14 +960,22 @@ PYEOF
       TEMP_EN_FILE="$SRT_URL_DIR/${OUT_NAME}_en.srt"
       CLEANUP_TEMP=false
     else
-      python3 << PYEOF || { warn "Failed to generate English for Arabic translation"; return; }
+      MODEL="$MODEL" AUDIO_FILE="$AUDIO_FILE" OUT_FILE="$TEMP_EN_FILE" \
+      TRANSCRIBE_LANG="$TRANSCRIBE_LANG" \
+      python3 << 'PYEOF' || { warn "Failed to generate English for Arabic translation"; return; }
+import os, sys
 from faster_whisper import WhisperModel
 
+MODEL = os.environ["MODEL"]
+AUDIO_FILE = os.environ["AUDIO_FILE"]
+OUT_FILE = os.environ["OUT_FILE"]
+TRANSCRIBE_LANG = os.environ["TRANSCRIBE_LANG"]
+
 try:
-    model = WhisperModel("$MODEL", device="cpu", compute_type="int8", cpu_threads=2)
+    model = WhisperModel(MODEL, device="cpu", compute_type="int8", cpu_threads=2)
     segments, _ = model.transcribe(
-        "$AUDIO_FILE",
-        language="${TRANSCRIBE_LANG}",
+        AUDIO_FILE,
+        language=TRANSCRIBE_LANG,
         task="translate",
         beam_size=5,
         vad_filter=True,
@@ -939,31 +988,36 @@ try:
         sec = s % 60
         return f"{h:02}:{m:02}:{sec:06.3f}".replace('.', ',')
 
-    with open("$TEMP_EN_FILE", "w", encoding="utf-8") as f:
+    with open(OUT_FILE, "w", encoding="utf-8") as f:
         for i, seg in enumerate(list(segments), 1):
             f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
 except Exception as e:
-    print(f"ERROR: {str(e)}", file=sys.stderr)
+    print(f"ERROR: {e}", file=sys.stderr)
 PYEOF
     fi
 
-    python3 << PYEOF || { warn "Arabic translation failed"; [ "$CLEANUP_TEMP" = "true" ] && rm -f "$TEMP_EN_FILE"; return; }
+    TEMP_EN_FILE="$TEMP_EN_FILE" AR_FILE="$AR_FILE" \
+    python3 << 'PYEOF' || { warn "Arabic translation failed"; [ "$CLEANUP_TEMP" = "true" ] && rm -f "$TEMP_EN_FILE"; return; }
+import os, sys
 import argostranslate.translate
+
+TEMP_EN_FILE = os.environ["TEMP_EN_FILE"]
+AR_FILE = os.environ["AR_FILE"]
 
 try:
     langs = argostranslate.translate.get_installed_languages()
     en_lang = next((l for l in langs if l.code == 'en'), None)
     ar_lang = next((l for l in langs if l.code == 'ar'), None)
-    
+
     if not en_lang or not ar_lang:
         raise Exception("Arabic language pack not installed")
-    
+
     translator = en_lang.get_translation(ar_lang)
 
     RTL_START = '\u202B'
     RTL_END   = '\u202C'
 
-    with open("$TEMP_EN_FILE", "r", encoding="utf-8") as f:
+    with open(TEMP_EN_FILE, "r", encoding="utf-8") as f:
         content = f.read()
 
     blocks = content.strip().split('\n\n')
@@ -981,12 +1035,12 @@ try:
         text_ar_rtl = f"{RTL_START}{text_ar}{RTL_END}"
         out_lines.append(f"{idx}\n{timing}\n{text_ar_rtl}")
 
-    with open("$AR_FILE", "w", encoding="utf-8") as f:
+    with open(AR_FILE, "w", encoding="utf-8") as f:
         f.write('\n\n'.join(out_lines) + '\n')
 
-    print(f"✓ Arabic RTL translation saved: $AR_FILE")
+    print(f"✓ Arabic RTL translation saved: {AR_FILE}")
 except Exception as e:
-    print(f"ERROR: {str(e)}", file=sys.stderr)
+    print(f"ERROR: {e}", file=sys.stderr)
 PYEOF
 
     [ -f "$AR_FILE" ] && log "Saved (AR): $AR_FILE"
@@ -1003,7 +1057,7 @@ download_audio() {
   local VID_URL="$1"
   local AUDIO_FILE="$2"
   yt-dlp -x --audio-format mp3 --audio-quality 0 \
-    $BASE_YTDLP_ARGS \
+    "${BASE_YTDLP_ARGS[@]}" \
     -o "$AUDIO_FILE" \
     "$VID_URL"
 }
@@ -1017,7 +1071,7 @@ FAILED=0
 SUCCESS=0
 
 if [ "$PLAYLIST_MODE" = true ]; then
-  mapfile -t VIDEO_IDS < <(yt-dlp --flat-playlist --get-id $BASE_YTDLP_ARGS "$URL" 2>/dev/null)
+  mapfile -t VIDEO_IDS < <(yt-dlp --flat-playlist --get-id "${BASE_YTDLP_ARGS[@]}" "$URL" 2>/dev/null)
   TOTAL=${#VIDEO_IDS[@]}
   debug "Total videos in playlist: $TOTAL"
   echo -e "  Processing ${BOLD}$TOTAL videos${NC}...\n"
@@ -1031,8 +1085,7 @@ if [ "$PLAYLIST_MODE" = true ]; then
 
     echo -e "\n${CYAN}  [$IDX/$TOTAL]${NC} https://youtu.be/$VID_ID"
 
-    TITLE=$(yt-dlp --get-title $BASE_YTDLP_ARGS "$VID_URL" 2>/dev/null \
-      | tr ' ' '_' | tr -cd '[:alnum:]_-' | cut -c1-60)
+    TITLE="$(get_video_title "$VID_URL")"
     TITLE="${TITLE:-video_${IDX}}"
     debug "Video title: $TITLE"
 
@@ -1063,8 +1116,7 @@ if [ "$PLAYLIST_MODE" = true ]; then
   done
 
 else
-  TITLE=$(yt-dlp --get-title $BASE_YTDLP_ARGS "$URL" 2>/dev/null \
-    | tr ' ' '_' | tr -cd '[:alnum:]_-' | cut -c1-60)
+  TITLE="$(get_video_title "$URL")"
   TITLE="${TITLE:-urdu_transcript}"
   
   # Download to temp folder
