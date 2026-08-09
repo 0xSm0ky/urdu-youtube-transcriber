@@ -759,7 +759,15 @@ fi
 BASE_YTDLP_ARGS=(
   --js-runtimes node
   --remote-components ejs:github
-  --extractor-args youtube:player_client=web
+  # web_embedded serves direct https audio without a GVS PO Token (plain
+  # `web`/`mweb`/`tv` require one and 403 on download). Needs node + cookies.
+  --extractor-args youtube:player_client=web_embedded
+  # Throttle requests — this box is on a datacenter IP that YouTube bot-flags
+  # under bursty load. Spacing requests out keeps the session from getting
+  # soft-banned mid-run. Tune up if you move to a residential IP/proxy.
+  --sleep-requests 2
+  --sleep-interval 5
+  --max-sleep-interval 20
 )
 [ -n "$COOKIES_FILE" ] && BASE_YTDLP_ARGS+=(--cookies "$COOKIES_FILE")
 
@@ -1112,7 +1120,16 @@ if [ "$PLAYLIST_MODE" = true ]; then
       warn "Skipped (download failed): $VID_ID"
       rm -f "$TEMP_AUDIO_FILE"
       FAILED=$((FAILED + 1))
+      # Back off hard on failure. A failed download skips the (slow) transcribe
+      # step, so without this the loop rapid-fires requests at YouTube and a
+      # single rate-flag cascades into every remaining video failing. Pausing
+      # lets a transient datacenter-IP bot-flag cool down before the next try.
+      warn "Backing off ${FAIL_BACKOFF:-45}s after failure..."
+      sleep "${FAIL_BACKOFF:-45}"
     fi
+    # Gentle spacing between videos even on success, to stay under the
+    # per-IP request-rate threshold YouTube applies to datacenter ranges.
+    sleep "${VIDEO_DELAY:-8}"
   done
 
 else
